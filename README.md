@@ -3,6 +3,11 @@
 Ask a question from your terminal and get a short, streaming answer. `idk` talks to
 [OpenRouter](https://openrouter.ai) using the OpenAI-compatible chat completions API.
 
+Answers stream as they arrive. When stdout is a terminal, Markdown is rendered with
+styled headings, lists, code blocks, links, and inline code; piped output stays raw
+Markdown. Set `NO_COLOR=1` to disable colors, and token throughput is reported on
+stderr.
+
 ## Requirements
 
 - A Rust toolchain (install via [rustup](https://rustup.rs))

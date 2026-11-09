@@ -1,3 +1,5 @@
+mod render;
+
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, IsTerminal, Read, Write};
@@ -8,6 +10,8 @@ use std::time::Instant;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+
+use render::{GREEN, RESET, Renderer, color_allowed};
 
 const BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_MODEL: &str = "openai/gpt-oss-20b:nitro";
@@ -38,9 +42,6 @@ DEFAULT MODEL:
 ENVIRONMENT:
   OPENROUTER_API_KEY           Overrides the saved API key
 ";
-
-const GREEN: &str = "\x1b[32m";
-const RESET: &str = "\x1b[0m";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -422,7 +423,7 @@ fn print_tps(tps: f64, estimated: bool) {
         format!("tps: {tps:.1}")
     };
 
-    let color = io::stderr().is_terminal() && env::var_os("NO_COLOR").is_none();
+    let color = io::stderr().is_terminal() && color_allowed();
     if color {
         eprintln!("{GREEN}{message}{RESET}");
     } else {
@@ -458,88 +459,131 @@ async fn run_prompt(prompt: String) -> Result<(), String> {
         return Err(format!("HTTP {status}: {body}"));
     }
 
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let mut state = StreamState::new();
     let mut stream = response.bytes_stream();
-    let mut pending = String::new();
-    let mut answer = String::new();
-    let mut generation_start: Option<Instant> = None;
-    let mut generation_end = Instant::now();
-    let mut fallback_tokens: u64 = 0;
-    let mut usage_tokens: Option<u64> = None;
+    let mut pending: Vec<u8> = Vec::new();
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| format!("stream failed: {error}"))?;
-        pending.push_str(&String::from_utf8_lossy(&chunk));
+        pending.extend_from_slice(&chunk);
 
-        while let Some(newline) = pending.find('\n') {
-            let line = pending[..newline].trim_end_matches('\r').to_string();
-            pending.drain(..=newline);
-
-            let Some(data) = line.strip_prefix("data:") else {
-                continue;
-            };
-            let data = data.trim_start();
-            if data.is_empty() || data == "[DONE]" {
-                continue;
-            }
-
-            let event: StreamEvent =
-                serde_json::from_str(data).map_err(|error| format!("bad stream event: {error}"))?;
-
-            if let Some(error) = &event.error {
-                let message = error.message.as_deref().unwrap_or("unknown error");
-                return Err(format!("stream error: {message}"));
-            }
-
-            if let Some(usage) = &event.usage
-                && usage.completion_tokens > 0
-            {
-                usage_tokens = Some(usage.completion_tokens);
-            }
-
-            let Some(choice) = event.choices.first() else {
-                continue;
-            };
-            let content = choice
-                .delta
-                .content
-                .as_deref()
-                .filter(|text| !text.is_empty());
-            let reasoning = choice
-                .delta
-                .reasoning
-                .as_deref()
-                .filter(|text| !text.is_empty());
-
-            if content.is_some() || reasoning.is_some() {
-                let now = Instant::now();
-                generation_start.get_or_insert(now);
-                generation_end = now;
-                fallback_tokens += 1;
-            }
-
-            if let Some(text) = content {
-                answer.push_str(text);
-            }
+        while let Some(position) = pending.iter().position(|&byte| byte == b'\n') {
+            let rest = pending.split_off(position + 1);
+            let line = std::mem::replace(&mut pending, rest);
+            state.handle_line(&String::from_utf8_lossy(&line), &mut out)?;
         }
     }
 
-    if let Some(start) = generation_start {
-        let seconds = generation_end
+    if !pending.is_empty() {
+        state.handle_line(&String::from_utf8_lossy(&pending), &mut out)?;
+    }
+
+    state.finish(&mut out)?;
+    state.report_tps();
+    Ok(())
+}
+
+struct StreamState {
+    renderer: Renderer,
+    generation_start: Option<Instant>,
+    generation_end: Instant,
+    fallback_tokens: u64,
+    usage_tokens: Option<u64>,
+}
+
+impl StreamState {
+    fn new() -> Self {
+        Self::with_renderer(Renderer::stdout())
+    }
+
+    fn with_renderer(renderer: Renderer) -> Self {
+        Self {
+            renderer,
+            generation_start: None,
+            generation_end: Instant::now(),
+            fallback_tokens: 0,
+            usage_tokens: None,
+        }
+    }
+
+    fn handle_line(&mut self, line: &str, out: &mut impl Write) -> Result<(), String> {
+        let line = line.trim_end_matches('\n').trim_end_matches('\r');
+        let Some(data) = line.strip_prefix("data:") else {
+            return Ok(());
+        };
+        let data = data.trim_start();
+        if data.is_empty() || data == "[DONE]" {
+            return Ok(());
+        }
+
+        let event: StreamEvent =
+            serde_json::from_str(data).map_err(|error| format!("bad stream event: {error}"))?;
+
+        if let Some(error) = &event.error {
+            let message = error.message.as_deref().unwrap_or("unknown error");
+            return Err(format!("stream error: {message}"));
+        }
+
+        if let Some(usage) = &event.usage
+            && usage.completion_tokens > 0
+        {
+            self.usage_tokens = Some(usage.completion_tokens);
+        }
+
+        let Some(choice) = event.choices.first() else {
+            return Ok(());
+        };
+        let content = choice
+            .delta
+            .content
+            .as_deref()
+            .filter(|text| !text.is_empty());
+        let reasoning = choice
+            .delta
+            .reasoning
+            .as_deref()
+            .filter(|text| !text.is_empty());
+
+        if content.is_some() || reasoning.is_some() {
+            let now = Instant::now();
+            self.generation_start.get_or_insert(now);
+            self.generation_end = now;
+            self.fallback_tokens += 1;
+        }
+
+        if let Some(text) = content {
+            self.renderer
+                .write(text, out)
+                .map_err(|error| format!("failed to write output: {error}"))?;
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self, out: &mut impl Write) -> Result<(), String> {
+        self.renderer
+            .finish(out)
+            .map_err(|error| format!("failed to write output: {error}"))
+    }
+
+    fn report_tps(&self) {
+        let Some(start) = self.generation_start else {
+            return;
+        };
+        let seconds = self
+            .generation_end
             .saturating_duration_since(start)
             .as_secs_f64();
-        let tokens = usage_tokens.or((fallback_tokens > 0).then_some(fallback_tokens));
+        let tokens = self
+            .usage_tokens
+            .or((self.fallback_tokens > 0).then_some(self.fallback_tokens));
         if let Some(tokens) = tokens
             && seconds > 0.0
         {
-            print_tps(tokens as f64 / seconds, usage_tokens.is_none());
+            print_tps(tokens as f64 / seconds, self.usage_tokens.is_none());
         }
     }
-
-    print!("{answer}");
-    if !answer.ends_with('\n') {
-        println!();
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -568,5 +612,37 @@ mod tests {
         assert_eq!(config.model(), DEFAULT_MODEL);
         assert_eq!(config.effort(), ThinkingEffort::Low);
         assert_eq!(config.api_key(), None);
+    }
+
+    #[test]
+    fn parses_stream_events() {
+        let mut state = StreamState::with_renderer(Renderer::plain());
+        let mut out = Vec::new();
+        state
+            .handle_line(
+                r#"data: {"choices":[{"delta":{"content":"hel"}}]}"#,
+                &mut out,
+            )
+            .unwrap();
+        state
+            .handle_line(
+                r#"data: {"choices":[{"delta":{"content":"lo\n"}}]}"#,
+                &mut out,
+            )
+            .unwrap();
+        state.handle_line("", &mut out).unwrap();
+        state.handle_line("data: [DONE]", &mut out).unwrap();
+        state.finish(&mut out).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "hello\n");
+    }
+
+    #[test]
+    fn surfaces_stream_errors() {
+        let mut state = StreamState::with_renderer(Renderer::plain());
+        let mut out = Vec::new();
+        let error = state
+            .handle_line(r#"data: {"error":{"message":"nope"}}"#, &mut out)
+            .unwrap_err();
+        assert_eq!(error, "stream error: nope");
     }
 }
