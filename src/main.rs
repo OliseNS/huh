@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::json;
 
 const BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_MODEL: &str = "openai/gpt-oss-20b:nitro";
@@ -39,9 +39,13 @@ ENVIRONMENT:
   OPENROUTER_API_KEY           Overrides the saved API key
 ";
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+const GREEN: &str = "\x1b[32m";
+const RESET: &str = "\x1b[0m";
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum ThinkingEffort {
+    #[default]
     Low,
     Medium,
     High,
@@ -94,7 +98,7 @@ impl Config {
         }
     }
 
-    fn save(&self) -> Result<(), String> {
+    fn save(&self) -> Result<PathBuf, String> {
         let path = config_path()?;
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)
@@ -107,8 +111,29 @@ impl Config {
         let temp = path.with_file_name("config.json.tmp");
         write_private(&temp, contents.as_bytes())?;
         fs::rename(&temp, &path)
-            .map_err(|error| format!("failed to save {}: {error}", path.display()))
+            .map_err(|error| format!("failed to save {}: {error}", path.display()))?;
+        Ok(path)
     }
+
+    fn api_key(&self) -> Option<&str> {
+        self.api_key.as_deref().and_then(non_empty)
+    }
+
+    fn model(&self) -> &str {
+        self.model
+            .as_deref()
+            .and_then(non_empty)
+            .unwrap_or(DEFAULT_MODEL)
+    }
+
+    fn effort(&self) -> ThinkingEffort {
+        self.effort.unwrap_or_default()
+    }
+}
+
+fn non_empty(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!value.is_empty()).then_some(value)
 }
 
 fn config_path() -> Result<PathBuf, String> {
@@ -165,27 +190,11 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
 fn env_api_key() -> Option<String> {
     env::var("OPENROUTER_API_KEY")
         .ok()
-        .map(|key| key.trim().to_string())
-        .filter(|key| !key.is_empty())
+        .and_then(|key| non_empty(&key).map(str::to_owned))
 }
 
-fn configured_api_key(config: &Config) -> Option<String> {
-    config
-        .api_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|key| !key.is_empty())
-        .map(|key| key.to_string())
-}
-
-fn configured_model(config: &Config) -> String {
-    config
-        .model
-        .as_deref()
-        .map(str::trim)
-        .filter(|model| !model.is_empty())
-        .unwrap_or(DEFAULT_MODEL)
-        .to_string()
+fn resolved_api_key(config: &Config) -> Option<String> {
+    env_api_key().or_else(|| config.api_key().map(str::to_owned))
 }
 
 fn read_stdin_prompt() -> Result<String, String> {
@@ -209,16 +218,16 @@ fn read_secret(label: &str) -> Result<String, String> {
     }
 }
 
-fn usage_error(program: &str) -> Result<ExitCode, String> {
+fn usage_error(program: &str) -> ExitCode {
     eprintln!("USAGE ERR: {program} <prompt>  (or pipe prompt on stdin)");
-    Ok(ExitCode::FAILURE)
+    ExitCode::FAILURE
 }
 
-fn ensure_no_args(args: &[String], option: &str) -> Result<(), String> {
-    if args.len() > 1 {
-        Err(format!("{option} takes no arguments"))
-    } else {
+fn no_extra_args(args: &[String], option: &str) -> Result<(), String> {
+    if args.is_empty() {
         Ok(())
+    } else {
+        Err(format!("{option} takes no arguments"))
     }
 }
 
@@ -232,16 +241,13 @@ fn single_value<'a>(args: &'a [String], option: &str) -> Result<Option<&'a str>,
 
 fn login() -> Result<(), String> {
     let key = read_secret("OpenRouter API key: ")?;
-    let key = key.trim();
-    if key.is_empty() {
-        return Err("API key cannot be empty".to_string());
-    }
+    let key = non_empty(&key).ok_or_else(|| "API key cannot be empty".to_string())?;
 
     let mut config = Config::load()?;
     config.api_key = Some(key.to_string());
-    config.save()?;
+    let path = config.save()?;
 
-    println!("Saved API key to {}", config_path()?.display());
+    println!("Saved API key to {}", path.display());
     if env_api_key().is_some() {
         eprintln!("note: OPENROUTER_API_KEY is set and overrides the saved key");
     }
@@ -262,12 +268,9 @@ fn logout() -> Result<(), String> {
 fn set_or_show_model(value: Option<&str>) -> Result<(), String> {
     let mut config = Config::load()?;
     match value {
-        None => println!("{}", configured_model(&config)),
+        None => println!("{}", config.model()),
         Some(value) => {
-            let value = value.trim();
-            if value.is_empty() {
-                return Err("model name cannot be empty".to_string());
-            }
+            let value = non_empty(value).ok_or_else(|| "model name cannot be empty".to_string())?;
             config.model = Some(value.to_string());
             config.save()?;
             println!("model set to {value}");
@@ -279,7 +282,7 @@ fn set_or_show_model(value: Option<&str>) -> Result<(), String> {
 fn set_or_show_effort(value: Option<&str>) -> Result<(), String> {
     let mut config = Config::load()?;
     match value {
-        None => println!("{}", config.effort.unwrap_or(ThinkingEffort::Low)),
+        None => println!("{}", config.effort()),
         Some(value) => {
             let effort = ThinkingEffort::parse(value)
                 .ok_or_else(|| format!("invalid effort: {value} (use low, medium, or high)"))?;
@@ -294,73 +297,68 @@ fn set_or_show_effort(value: Option<&str>) -> Result<(), String> {
 fn show_config() -> Result<(), String> {
     let path = config_path()?;
     let config = Config::load()?;
-    let model = configured_model(&config);
-    let effort = config.effort.unwrap_or(ThinkingEffort::Low);
     let api_key = if env_api_key().is_some() {
-        "set (OPENROUTER_API_KEY environment variable)".to_string()
-    } else if configured_api_key(&config).is_some() {
-        "set (saved in config)".to_string()
+        "set (OPENROUTER_API_KEY environment variable)"
+    } else if config.api_key().is_some() {
+        "set (saved in config)"
     } else {
-        "not set (run `idk --login`)".to_string()
+        "not set (run `idk --login`)"
     };
 
     println!("config:   {}", path.display());
-    println!("model:    {model}");
-    println!("effort:   {effort}");
+    println!("model:    {}", config.model());
+    println!("effort:   {}", config.effort());
     println!("api key:  {api_key}");
     println!("base url: {BASE_URL}");
     Ok(())
 }
 
 async fn dispatch() -> Result<ExitCode, String> {
-    let args: Vec<String> = env::args().skip(1).collect();
-    let program = env::args().next().unwrap_or_else(|| "idk".to_string());
+    let mut args = env::args();
+    let program = args.next().unwrap_or_else(|| "idk".to_string());
+    let args: Vec<String> = args.collect();
 
-    if args.is_empty() {
-        if !io::stdin().is_terminal() {
-            let prompt = read_stdin_prompt()?;
-            if prompt.is_empty() {
-                return usage_error(&program);
-            }
-            run_prompt(prompt).await?;
+    let Some((command, rest)) = args.split_first() else {
+        if io::stdin().is_terminal() {
+            print!("{HELP}");
             return Ok(ExitCode::SUCCESS);
         }
 
-        print!("{HELP}");
+        let prompt = read_stdin_prompt()?;
+        if prompt.is_empty() {
+            return Ok(usage_error(&program));
+        }
+        run_prompt(prompt).await?;
         return Ok(ExitCode::SUCCESS);
-    }
+    };
 
-    match args[0].as_str() {
+    match command.as_str() {
         "-h" | "--help" => {
-            ensure_no_args(&args, "--help")?;
+            no_extra_args(rest, "--help")?;
             print!("{HELP}");
         }
         "--login" => {
-            ensure_no_args(&args, "--login")?;
+            no_extra_args(rest, "--login")?;
             login()?;
         }
         "--logout" => {
-            ensure_no_args(&args, "--logout")?;
+            no_extra_args(rest, "--logout")?;
             logout()?;
         }
         "--config" => {
-            ensure_no_args(&args, "--config")?;
+            no_extra_args(rest, "--config")?;
             show_config()?;
         }
         "--config-path" => {
-            ensure_no_args(&args, "--config-path")?;
+            no_extra_args(rest, "--config-path")?;
             println!("{}", config_path()?.display());
         }
-        "--model" => {
-            set_or_show_model(single_value(&args[1..], "--model")?)?;
-        }
-        "--effort" => {
-            set_or_show_effort(single_value(&args[1..], "--effort")?)?;
-        }
+        "--model" => set_or_show_model(single_value(rest, "--model")?)?,
+        "--effort" => set_or_show_effort(single_value(rest, "--effort")?)?,
         "--" => {
-            let prompt = args[1..].join(" ");
+            let prompt = rest.join(" ");
             if prompt.trim().is_empty() {
-                return usage_error(&program);
+                return Ok(usage_error(&program));
             }
             run_prompt(prompt).await?;
         }
@@ -369,9 +367,7 @@ async fn dispatch() -> Result<ExitCode, String> {
                 "unknown option: {option}\nRun `idk --help` for usage."
             ));
         }
-        _ => {
-            run_prompt(args.join(" ")).await?;
-        }
+        _ => run_prompt(args.join(" ")).await?,
     }
 
     Ok(ExitCode::SUCCESS)
@@ -388,25 +384,68 @@ async fn main() -> ExitCode {
     }
 }
 
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct StreamEvent {
+    choices: Vec<Choice>,
+    usage: Option<Usage>,
+    error: Option<StreamError>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct Choice {
+    delta: Delta,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct Delta {
+    content: Option<String>,
+    reasoning: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Usage {
+    completion_tokens: u64,
+}
+
+#[derive(Deserialize)]
+struct StreamError {
+    message: Option<String>,
+}
+
+fn print_tps(tps: f64, estimated: bool) {
+    let message = if estimated {
+        format!("tps: {tps:.1} (estimated)")
+    } else {
+        format!("tps: {tps:.1}")
+    };
+
+    let color = io::stderr().is_terminal() && env::var_os("NO_COLOR").is_none();
+    if color {
+        eprintln!("{GREEN}{message}{RESET}");
+    } else {
+        eprintln!("{message}");
+    }
+}
+
 async fn run_prompt(prompt: String) -> Result<(), String> {
     let config = Config::load()?;
-    let api_key = env_api_key()
-        .or_else(|| configured_api_key(&config))
+    let api_key = resolved_api_key(&config)
         .ok_or_else(|| "no API key found; run `idk --login`".to_string())?;
-    let model = configured_model(&config);
-    let effort = config.effort.unwrap_or(ThinkingEffort::Low);
 
     let response = reqwest::Client::new()
         .post(format!("{BASE_URL}/chat/completions"))
         .bearer_auth(api_key)
         .json(&json!({
-            "model": model,
+            "model": config.model(),
             "stream": true,
             "messages": [
                 { "role": "system", "content": SYSTEM_PROMPT },
                 { "role": "user", "content": prompt },
             ],
-            "reasoning": { "effort": effort.as_str() },
+            "reasoning": { "effort": config.effort().as_str() },
             "stream_options": { "include_usage": true },
         }))
         .send()
@@ -443,26 +482,33 @@ async fn run_prompt(prompt: String) -> Result<(), String> {
                 continue;
             }
 
-            let event: Value =
+            let event: StreamEvent =
                 serde_json::from_str(data).map_err(|error| format!("bad stream event: {error}"))?;
 
-            if let Some(error) = event.get("error") {
-                let message = error
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown error");
+            if let Some(error) = &event.error {
+                let message = error.message.as_deref().unwrap_or("unknown error");
                 return Err(format!("stream error: {message}"));
             }
 
-            if let Some(tokens) = event["usage"]["completion_tokens"].as_u64()
-                && tokens > 0
+            if let Some(usage) = &event.usage
+                && usage.completion_tokens > 0
             {
-                usage_tokens = Some(tokens);
+                usage_tokens = Some(usage.completion_tokens);
             }
 
-            let delta = &event["choices"][0]["delta"];
-            let content = delta["content"].as_str().filter(|text| !text.is_empty());
-            let reasoning = delta["reasoning"].as_str().filter(|text| !text.is_empty());
+            let Some(choice) = event.choices.first() else {
+                continue;
+            };
+            let content = choice
+                .delta
+                .content
+                .as_deref()
+                .filter(|text| !text.is_empty());
+            let reasoning = choice
+                .delta
+                .reasoning
+                .as_deref()
+                .filter(|text| !text.is_empty());
 
             if content.is_some() || reasoning.is_some() {
                 let now = Instant::now();
@@ -481,16 +527,11 @@ async fn run_prompt(prompt: String) -> Result<(), String> {
         let seconds = generation_end
             .saturating_duration_since(start)
             .as_secs_f64();
-        if let Some(tokens) =
-            usage_tokens.or_else(|| (fallback_tokens > 0).then_some(fallback_tokens))
+        let tokens = usage_tokens.or((fallback_tokens > 0).then_some(fallback_tokens));
+        if let Some(tokens) = tokens
             && seconds > 0.0
         {
-            let tps = tokens as f64 / seconds;
-            if usage_tokens.is_some() {
-                eprintln!("tps: {tps:.1}");
-            } else {
-                eprintln!("tps: {tps:.1} (estimated)");
-            }
+            print_tps(tokens as f64 / seconds, usage_tokens.is_none());
         }
     }
 
@@ -499,4 +540,33 @@ async fn run_prompt(prompt: String) -> Result<(), String> {
         println!();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_effort_case_insensitively() {
+        assert_eq!(ThinkingEffort::parse(" HIGH "), Some(ThinkingEffort::High));
+        assert_eq!(
+            ThinkingEffort::parse("Medium"),
+            Some(ThinkingEffort::Medium)
+        );
+        assert_eq!(ThinkingEffort::parse("extreme"), None);
+    }
+
+    #[test]
+    fn trims_blank_values() {
+        assert_eq!(non_empty("   "), None);
+        assert_eq!(non_empty("  value \n"), Some("value"));
+    }
+
+    #[test]
+    fn config_falls_back_to_defaults() {
+        let config = Config::default();
+        assert_eq!(config.model(), DEFAULT_MODEL);
+        assert_eq!(config.effort(), ThinkingEffort::Low);
+        assert_eq!(config.api_key(), None);
+    }
 }
