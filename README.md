@@ -5,8 +5,9 @@ Ask a question from your terminal and get a short, streaming answer. `idk` talks
 
 Answers stream as they arrive. When stdout is a terminal, Markdown is rendered with
 styled headings, lists, code blocks, links, and inline code; piped output stays raw
-Markdown. Set `NO_COLOR=1` to disable colors, and token throughput is reported on
-stderr.
+Markdown. Set `NO_COLOR=1` to disable colors. While waiting for the first token, a
+spinner is shown on stderr when it is a terminal, and token throughput is reported
+there once the answer completes.
 
 ## Requirements
 
