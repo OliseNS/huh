@@ -93,8 +93,9 @@ The session lives at `${XDG_STATE_HOME:-$HOME/.local/state}/huh/session.json`. `
 loads the stored messages, appends the new question, and saves the answer for the next
 follow-up. If no previous session exists, it warns and starts a new conversation. History
 is capped at 10 question-and-answer pairs (20 messages) and roughly 80,000 characters.
-The first pair is kept as the context anchor; the oldest middle pairs are dropped first,
-and the latest pair is always kept.
+The first pair is kept as the context anchor; the oldest middle pairs are dropped first.
+If the anchor pair alone exceeds the character budget, it is dropped too, and the latest
+pair is always kept.
 
 Web search uses [OpenRouter's web search server
 tool](https://openrouter.ai/docs/guides/features/server-tools/web-search), which adds a
@@ -137,7 +138,8 @@ cargo build 2>&1 | huh -y
 `--file` attachments. It does not read files, glob, or search on its own. Without a
 command, piped output, or file it exits with a usage message instead of calling the API.
 Web search is off for `-y` unless you pass `-s`. Debugging uses the same model as normal
-requests; override it for one request with `-m`. `-y` cannot be combined with `-c`.
+requests; override it for one request with `-m`. `-y` cannot be combined with `-c`, and
+debugging requests are not saved to the conversation session.
 
 ## Attaching files
 
@@ -148,7 +150,9 @@ huh -f src/main.rs -f Cargo.toml "review these files"
 huh -y -f build.log "what went wrong?"
 ```
 
-Only files you name explicitly are read.
+Only files you name explicitly are read. Files are limited to 512 KiB each and 1 MiB
+total. Piped input is truncated to the last 256 KiB with a marker in the prompt, so long
+logs keep their final errors.
 
 ## Options and commands
 
@@ -164,11 +168,12 @@ Only files you name explicitly are read.
 | `--login`                          | Save your OpenRouter API key             |
 | `--logout`                         | Remove the saved API key                 |
 | `--config`                         | Show configuration and defaults          |
+| `-V`, `--version`                  | Show version                             |
 | `-h`, `--help`                     | Show help                                |
 
 The default model is `deepseek/deepseek-v4.1-flash-1017:nitro`, chosen for cheap, fast
 answers. Override it for one request with `-m` (for example,
-`-m openai/gpt-5-mini` for harder reasoning).
+`-m openai/gpt-5-mini` for harder reasoning), or for a shell session with `HUH_MODEL`.
 
 Requests use a 10s connect timeout and a 120s read timeout. Transient failures
 (429 and 5xx responses) are retried up to three times (four attempts total) with

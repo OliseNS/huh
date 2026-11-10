@@ -20,11 +20,16 @@ pub(crate) fn color_allowed() -> bool {
     env::var_os("NO_COLOR").is_none() && env::var("TERM").is_ok_and(|term| term != "dumb")
 }
 
+struct Fence {
+    indent: String,
+    marker: char,
+}
+
 pub(crate) struct Renderer {
     markdown: bool,
     color: bool,
     pending: String,
-    fence: Option<String>,
+    fence: Option<Fence>,
     wrote: bool,
     ended_with_newline: bool,
 }
@@ -90,14 +95,13 @@ impl Renderer {
         let trimmed = line.trim_start();
         let indent = &line[..line.len() - trimmed.len()];
 
-        if self.fence.is_some() {
-            if fence_close(trimmed) {
+        if let Some(fence) = &self.fence {
+            if fence_close(trimmed, fence.marker) {
                 self.write_fence_bottom(out)?;
                 self.fence = None;
             } else {
-                let fence_indent = self.fence.as_deref().unwrap_or("");
-                let content = line.strip_prefix(fence_indent).unwrap_or(trimmed);
-                out.write_all(fence_indent.as_bytes())?;
+                let content = line.strip_prefix(fence.indent.as_str()).unwrap_or(trimmed);
+                out.write_all(fence.indent.as_bytes())?;
                 self.write_styled(out, DIM, "│ ")?;
                 self.write_styled(out, CYAN, content)?;
                 writeln!(out)?;
@@ -105,7 +109,7 @@ impl Renderer {
             return Ok(());
         }
 
-        if let Some(info) = fence_open(trimmed) {
+        if let Some((marker, info)) = fence_open(trimmed) {
             let label = if info.is_empty() {
                 String::new()
             } else {
@@ -114,7 +118,10 @@ impl Renderer {
             out.write_all(indent.as_bytes())?;
             self.write_styled(out, DIM, &format!("╭─{label}"))?;
             writeln!(out)?;
-            self.fence = Some(indent.to_string());
+            self.fence = Some(Fence {
+                indent: indent.to_string(),
+                marker,
+            });
             return Ok(());
         }
 
@@ -179,7 +186,7 @@ impl Renderer {
 
     fn write_fence_bottom(&self, out: &mut impl Write) -> io::Result<()> {
         if let Some(fence) = &self.fence {
-            out.write_all(fence.as_bytes())?;
+            out.write_all(fence.indent.as_bytes())?;
             self.write_styled(out, DIM, "╰─")?;
             writeln!(out)?;
         }
@@ -269,20 +276,21 @@ fn is_rule(line: &str) -> bool {
         && characters.all(|c| c == first)
 }
 
-fn fence_open(line: &str) -> Option<&str> {
-    ["```", "~~~"]
-        .iter()
-        .find_map(|marker| line.strip_prefix(marker))
-        .map(str::trim)
+fn fence_open(line: &str) -> Option<(char, &str)> {
+    let marker = line.chars().next()?;
+    if marker != '`' && marker != '~' {
+        return None;
+    }
+    let count = line.chars().take_while(|&c| c == marker).count();
+    if count < 3 {
+        return None;
+    }
+    Some((marker, line[count..].trim()))
 }
 
-fn fence_close(line: &str) -> bool {
+fn fence_close(line: &str, marker: char) -> bool {
     let line = line.trim_end();
-    let mut characters = line.chars();
-    let Some(first) = characters.next() else {
-        return false;
-    };
-    matches!(first, '`' | '~') && line.chars().count() >= 3 && characters.all(|c| c == first)
+    line.chars().count() >= 3 && line.chars().all(|c| c == marker)
 }
 
 fn render_inline(text: &str, base: &[&'static str], color: bool) -> String {
@@ -453,6 +461,13 @@ mod tests {
         assert!(output.contains("│ let x = 1;"));
         assert!(output.contains("╰─"));
         assert!(!output.contains("```"));
+    }
+
+    #[test]
+    fn fences_only_close_with_their_opening_marker() {
+        let output = render("```\ncode\n~~~\nmore\n```\n");
+        assert!(output.contains("│ ~~~"));
+        assert!(output.contains("│ more"));
     }
 
     #[test]

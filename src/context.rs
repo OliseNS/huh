@@ -3,23 +3,58 @@ use std::path::PathBuf;
 
 use crate::util::{env_value, non_empty};
 
+const FILE_LIMIT_BYTES: u64 = 512 * 1024;
+const TOTAL_LIMIT_BYTES: u64 = 1024 * 1024;
+
 pub(crate) struct FileContext {
     pub(crate) path: PathBuf,
     pub(crate) contents: String,
 }
 
 pub(crate) fn load_files(paths: &[PathBuf]) -> Result<Vec<FileContext>, String> {
-    paths
-        .iter()
-        .map(|path| {
-            fs::read_to_string(path)
-                .map(|contents| FileContext {
-                    path: path.clone(),
-                    contents,
-                })
-                .map_err(|error| format!("failed to read {}: {error}", path.display()))
-        })
-        .collect()
+    let mut total = 0u64;
+    let mut files = Vec::with_capacity(paths.len());
+
+    for path in paths {
+        let metadata = fs::metadata(path)
+            .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+        if !metadata.is_file() {
+            return Err(format!(
+                "failed to read {}: not a regular file",
+                path.display()
+            ));
+        }
+        if metadata.len() > FILE_LIMIT_BYTES {
+            return Err(file_too_large(path, metadata.len()));
+        }
+
+        let contents = fs::read_to_string(path)
+            .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+        let size = contents.len() as u64;
+        if size > FILE_LIMIT_BYTES {
+            return Err(file_too_large(path, size));
+        }
+        total += size;
+        if total > TOTAL_LIMIT_BYTES {
+            return Err(format!(
+                "attachments exceed the {TOTAL_LIMIT_BYTES} byte total limit"
+            ));
+        }
+
+        files.push(FileContext {
+            path: path.clone(),
+            contents,
+        });
+    }
+
+    Ok(files)
+}
+
+fn file_too_large(path: &std::path::Path, size: u64) -> String {
+    format!(
+        "{} is {size} bytes; the limit is {FILE_LIMIT_BYTES} bytes per file (attach a trimmed excerpt instead)",
+        path.display()
+    )
 }
 
 #[derive(Default)]

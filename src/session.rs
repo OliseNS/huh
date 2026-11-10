@@ -42,6 +42,12 @@ pub(crate) fn trim_history(messages: &mut Vec<Message>) {
             chars -= message.content.chars().count();
         }
     }
+
+    while chars > MAX_HISTORY_CHARS && messages.len() > 2 {
+        for message in messages.drain(..2) {
+            chars -= message.content.chars().count();
+        }
+    }
 }
 
 fn state_path() -> Result<PathBuf, String> {
@@ -162,13 +168,11 @@ mod tests {
     }
 
     #[test]
-    fn keeps_original_and_latest_pairs_when_over_budget() {
+    fn drops_the_anchor_when_it_alone_breaks_the_budget() {
         let mut messages = conversation(3, 30_000);
         trim_history(&mut messages);
-        assert_eq!(messages.len(), 4);
-        assert_eq!(messages[0], Message::user(padded("q0", 30_000, 'x')));
-        assert_eq!(messages[1], Message::assistant(padded("a0", 30_000, 'y')));
-        assert_eq!(messages[2], Message::user(padded("q2", 30_000, 'x')));
-        assert_eq!(messages[3], Message::assistant(padded("a2", 30_000, 'y')));
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0], Message::user(padded("q2", 30_000, 'x')));
+        assert_eq!(messages[1], Message::assistant(padded("a2", 30_000, 'y')));
     }
 }

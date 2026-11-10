@@ -35,6 +35,11 @@ async fn dispatch() -> Result<ExitCode, String> {
                 print!("{}", cli::help());
                 return Ok(ExitCode::SUCCESS);
             }
+            "-V" | "--version" => {
+                cli::no_extra_args(rest, "--version")?;
+                println!("huh {}", env!("CARGO_PKG_VERSION"));
+                return Ok(ExitCode::SUCCESS);
+            }
             "--login" => {
                 cli::no_extra_args(rest, "--login")?;
                 config::login()?;
@@ -80,7 +85,7 @@ fn build_prompt(options: &Options) -> Result<String, String> {
     if options.why {
         let mut why = context::WhyContext::from_env();
         if !io::stdin().is_terminal() {
-            why.output = Some(util::read_stdin()?);
+            why.output = Some(util::read_prompt_stdin()?);
         }
         if !why.has_context(&files) {
             return Err(
@@ -92,7 +97,7 @@ fn build_prompt(options: &Options) -> Result<String, String> {
     } else {
         let question = match question {
             Some(question) => Some(question),
-            None if !io::stdin().is_terminal() => Some(util::read_stdin()?),
+            None if !io::stdin().is_terminal() => Some(util::read_prompt_stdin()?),
             None => None,
         };
         Ok(context::compose_question(question.as_deref(), &files))
@@ -103,7 +108,12 @@ async fn run_request(options: Options, prompt: String) -> Result<(), String> {
     let config = Config::load()?;
     let api_key = config::resolved_api_key(&config)
         .ok_or_else(|| "no API key found; run `huh --login`".to_string())?;
-    let model = options.model.as_deref().unwrap_or(config::DEFAULT_MODEL);
+    let env_model = config::env_model();
+    let model = options
+        .model
+        .as_deref()
+        .or(env_model.as_deref())
+        .unwrap_or(config::DEFAULT_MODEL);
 
     let mut history = if options.continue_session {
         let mut messages = session::load_session()?;
@@ -131,6 +141,9 @@ async fn run_request(options: Options, prompt: String) -> Result<(), String> {
     let answer = output::stream_answer(response, spinner, started).await?;
     if answer.trim().is_empty() {
         return Err("model returned no answer content".to_string());
+    }
+    if options.why {
+        return Ok(());
     }
 
     history.push(Message::assistant(answer));

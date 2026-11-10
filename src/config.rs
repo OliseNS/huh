@@ -40,6 +40,10 @@ pub(crate) fn env_api_key() -> Option<String> {
     env_value("OPENROUTER_API_KEY")
 }
 
+pub(crate) fn env_model() -> Option<String> {
+    env_value("HUH_MODEL")
+}
+
 pub(crate) fn resolved_api_key(config: &Config) -> Option<String> {
     env_api_key().or_else(|| config.api_key().map(str::to_owned))
 }
@@ -88,7 +92,7 @@ pub(crate) fn show_config(base_url: &str) -> Result<(), String> {
     println!("config:    {}", path.display());
     println!("api key:   {api_key}");
     println!("base url:  {base_url}");
-    println!("model:     {DEFAULT_MODEL} (override with -m)");
+    println!("model:     {DEFAULT_MODEL} (override with -m or HUH_MODEL)");
     Ok(())
 }
 

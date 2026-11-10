@@ -26,6 +26,7 @@ WEB SEARCH:
 
 OPTIONS:
   -m, --model <name>              Model for this request
+  -V, --version                   Show version
   -h, --help                      Show this help
 
 COMMANDS:
@@ -39,6 +40,7 @@ DEFAULT MODEL:
 
 ENVIRONMENT:
   OPENROUTER_API_KEY           Overrides the saved API key
+  HUH_MODEL                    Default model (overridden by -m)
   NO_COLOR                     Disable colored output
   HUH_LAST_COMMAND             Previous command for --why (set by huh-why)
   HUH_LAST_EXIT_CODE           Previous exit code for --why (set by huh-why)
