@@ -10,7 +10,7 @@ spinner is shown on stderr when it is a terminal, and token throughput is report
 there too when stderr is a terminal.
 
 Web search is on by default: the model decides when a question needs current
-information and searches only then. Pass `--search` to force a search.
+information and searches only then. Pass `--no-search` to skip search for a request.
 
 ## Requirements
 
@@ -61,7 +61,7 @@ with private permissions.
 huh "why is the sky blue?"
 echo "explain closures in Rust" | huh
 huh -- "what does -v mean?"
-huh --search "what happened in the news today?"
+huh --no-search "what does this Rust error mean?"
 ```
 
 Plain `huh` starts a fresh conversation and replaces the saved session. Use `-c` (or
@@ -93,7 +93,7 @@ huh -e low "what is a monad?"
 | Option / command                | Description                              |
 | ------------------------------- | ---------------------------------------- |
 | `-c`, `--continue`              | Continue the previous conversation       |
-| `-s`, `--search`                | Force a web search                       |
+| `--no-search`                   | Disable web search for this request      |
 | `-m`, `--model <name>`          | Model for this request                   |
 | `-e`, `--effort <low\|medium\|high>` | Reasoning effort for this request   |
 | `--login`                       | Save your OpenRouter API key             |
@@ -108,7 +108,8 @@ The default model is `openai/gpt-oss-20b:nitro`. Reasoning effort is sent only w
 configured with `--set-effort` or `-e`; otherwise the model's default is used.
 
 Requests use a 10s connect timeout and a 120s read timeout. Transient failures
-(429 and 5xx responses) are retried up to four times with exponential backoff.
+(429 and 5xx responses) are retried up to three times (four attempts total) with
+exponential backoff.
 
 ## Development
 
