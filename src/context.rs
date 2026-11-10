@@ -1,10 +1,11 @@
-use std::fs;
-use std::path::PathBuf;
+use std::fs::{self, File};
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 use crate::util::{env_value, non_empty};
 
-const FILE_LIMIT_BYTES: u64 = 512 * 1024;
-const TOTAL_LIMIT_BYTES: u64 = 1024 * 1024;
+const FILE_LIMIT_BYTES: u64 = 256 * 1024;
+const TOTAL_LIMIT_BYTES: u64 = 512 * 1024;
 
 pub(crate) struct FileContext {
     pub(crate) path: PathBuf,
@@ -28,19 +29,39 @@ pub(crate) fn load_files(paths: &[PathBuf]) -> Result<Vec<FileContext>, String> 
             return Err(file_too_large(path, metadata.len()));
         }
 
-        let contents = fs::read_to_string(path)
+        let file = File::open(path)
             .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-        let size = contents.len() as u64;
+        let metadata = file
+            .metadata()
+            .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+        if !metadata.is_file() {
+            return Err(format!(
+                "failed to read {}: not a regular file",
+                path.display()
+            ));
+        }
+
+        let cap = FILE_LIMIT_BYTES
+            .min(TOTAL_LIMIT_BYTES.saturating_sub(total))
+            .saturating_add(1);
+        let mut bytes = Vec::new();
+        file.take(cap)
+            .read_to_end(&mut bytes)
+            .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+
+        let size = bytes.len() as u64;
         if size > FILE_LIMIT_BYTES {
             return Err(file_too_large(path, size));
         }
-        total += size;
-        if total > TOTAL_LIMIT_BYTES {
+        if total + size > TOTAL_LIMIT_BYTES {
             return Err(format!(
                 "attachments exceed the {TOTAL_LIMIT_BYTES} byte total limit"
             ));
         }
+        total += size;
 
+        let contents = String::from_utf8(bytes)
+            .map_err(|_| format!("failed to read {}: not valid UTF-8", path.display()))?;
         files.push(FileContext {
             path: path.clone(),
             contents,
@@ -50,7 +71,7 @@ pub(crate) fn load_files(paths: &[PathBuf]) -> Result<Vec<FileContext>, String> 
     Ok(files)
 }
 
-fn file_too_large(path: &std::path::Path, size: u64) -> String {
+fn file_too_large(path: &Path, size: u64) -> String {
     format!(
         "{} is {size} bytes; the limit is {FILE_LIMIT_BYTES} bytes per file (attach a trimmed excerpt instead)",
         path.display()
@@ -96,13 +117,13 @@ pub(crate) fn compose_why(
 ) -> String {
     let mut sections = Vec::new();
     if let Some(command) = context.command.as_deref().and_then(non_empty) {
-        sections.push(format!("Command:\n```sh\n{}\n```", command.trim()));
+        sections.push(fenced_block("Command:", Some("sh"), command.trim()));
     }
     if let Some(exit_code) = context.exit_code.as_deref().and_then(non_empty) {
         sections.push(format!("Exit code: {}", exit_code.trim()));
     }
     if let Some(output) = context.output.as_deref().and_then(non_empty) {
-        sections.push(format!("Output:\n```\n{}\n```", output.trim()));
+        sections.push(fenced_block("Output:", None, output.trim()));
     }
     if let Some(question) = question.and_then(non_empty) {
         sections.push(format!("Question: {question}"));
@@ -112,16 +133,40 @@ pub(crate) fn compose_why(
 }
 
 fn format_file(file: &FileContext) -> String {
-    format!(
-        "File: {}\n```\n{}\n```",
-        file.path.display(),
-        file.contents.trim_end()
+    fenced_block(
+        &format!("File: {}", file.path.display()),
+        None,
+        file.contents.trim_end(),
     )
+}
+
+fn fenced_block(label: &str, info: Option<&str>, contents: &str) -> String {
+    let fence = "`".repeat(longest_run(contents, '`').max(2) + 1);
+    let opening = match info {
+        Some(info) => format!("{fence}{info}"),
+        None => fence.clone(),
+    };
+    format!("{label}\n{opening}\n{contents}\n{fence}")
+}
+
+fn longest_run(text: &str, needle: char) -> usize {
+    let mut longest = 0;
+    let mut current = 0;
+    for character in text.chars() {
+        if character == needle {
+            current += 1;
+            longest = longest.max(current);
+        } else {
+            current = 0;
+        }
+    }
+    longest
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn file(path: &str, contents: &str) -> FileContext {
         FileContext {

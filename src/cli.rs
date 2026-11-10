@@ -13,6 +13,8 @@ USAGE:
   echo <prompt> | huh          Ask a question from stdin
   huh -- <prompt>              Ask a prompt that starts with -
 
+Options must come before the prompt; everything after the first prompt word is text.
+
 CONVERSATION:
   -c, --continue                  Continue the previous conversation
 
@@ -108,7 +110,10 @@ impl Options {
                             "unknown option: {option}\nRun `huh --help` for usage."
                         ));
                     }
-                    _ => options.prompt.push(arg.clone()),
+                    _ => {
+                        options.prompt.push(arg.clone());
+                        literal = true;
+                    }
                 }
             }
             index += 1;
@@ -196,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn double_dash_treats_the_rest_as_prompt_and_keeps_defaults() {
+    fn treats_remaining_words_as_prompt_and_keeps_defaults() {
         let options = parse(&["--", "-m", "not-a-flag"]);
         assert_eq!(options.model, None);
         assert_eq!(options.prompt.join(" "), "-m not-a-flag");
@@ -204,6 +209,11 @@ mod tests {
         assert!(!options.continue_session);
         assert!(!options.why);
         assert!(options.files.is_empty());
+
+        let mid_prompt = parse(&["-c", "is", "-m", "main?"]);
+        assert_eq!(mid_prompt.model, None);
+        assert!(mid_prompt.continue_session);
+        assert_eq!(mid_prompt.prompt.join(" "), "is -m main?");
     }
 
     #[test]

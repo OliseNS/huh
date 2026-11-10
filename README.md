@@ -81,6 +81,9 @@ huh -- "what does -v mean?"
 huh -ns "what does this Rust error mean?"
 ```
 
+Options must come before the prompt; everything after the first prompt word is text. Use
+`--` when the prompt itself starts with `-`.
+
 Plain `huh` starts a fresh conversation and replaces the saved session. Use `-c` (or
 `--continue`) to follow up on the previous conversation:
 
@@ -94,7 +97,7 @@ loads the stored messages, appends the new question, and saves the answer for th
 follow-up. If no previous session exists, it warns and starts a new conversation. History
 is capped at 10 question-and-answer pairs (20 messages) and roughly 80,000 characters.
 The first pair is kept as the context anchor; the oldest middle pairs are dropped first.
-If the anchor pair alone exceeds the character budget, it is dropped too, and the latest
+If the first and latest pairs still do not fit, the anchor is dropped too, and the latest
 pair is always kept.
 
 Web search uses [OpenRouter's web search server
@@ -136,8 +139,8 @@ cargo build 2>&1 | huh -y
 
 `-y` sends the previous command, its exit code, piped output, your extra words, and any
 `--file` attachments. It does not read files, glob, or search on its own. Without a
-command, piped output, or file it exits with a usage message instead of calling the API.
-Web search is off for `-y` unless you pass `-s`. Debugging uses the same model as normal
+command, piped output, or file it exits with an error instead of calling the API. Web
+search is off for `-y` unless you pass `-s`. Debugging uses the same model as normal
 requests; override it for one request with `-m`. `-y` cannot be combined with `-c`, and
 debugging requests are not saved to the conversation session.
 
@@ -150,9 +153,10 @@ huh -f src/main.rs -f Cargo.toml "review these files"
 huh -y -f build.log "what went wrong?"
 ```
 
-Only files you name explicitly are read. Files are limited to 512 KiB each and 1 MiB
+Only files you name explicitly are read. Files are limited to 256 KiB each and 512 KiB
 total. Piped input is truncated to the last 256 KiB with a marker in the prompt, so long
-logs keep their final errors.
+logs keep their final errors. Attached file contents are part of the saved conversation,
+so `-c` can refer back to them.
 
 ## Options and commands
 
@@ -175,9 +179,9 @@ The default model is `deepseek/deepseek-v4.1-flash-1017:nitro`, chosen for cheap
 answers. Override it for one request with `-m` (for example,
 `-m openai/gpt-5-mini` for harder reasoning), or for a shell session with `HUH_MODEL`.
 
-Requests use a 10s connect timeout and a 120s read timeout. Transient failures
-(429 and 5xx responses) are retried up to three times (four attempts total) with
-exponential backoff.
+Requests use a 10s connect timeout and a 120s read timeout. Network failures, timeouts,
+429, and 5xx responses are retried up to three times (four attempts total) with
+exponential backoff; `Retry-After` is honored up to 30 seconds.
 
 ## Development
 

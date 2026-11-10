@@ -93,6 +93,7 @@ struct StreamError {
 
 pub(crate) enum StreamUpdate {
     Ignore,
+    Done,
     Delta {
         content: Option<String>,
         reasoning: Option<String>,
@@ -107,7 +108,10 @@ pub(crate) fn parse_stream_line(line: &str) -> Result<StreamUpdate, String> {
         return Ok(StreamUpdate::Ignore);
     };
     let data = data.trim_start();
-    if data.is_empty() || data == "[DONE]" {
+    if data == "[DONE]" {
+        return Ok(StreamUpdate::Done);
+    }
+    if data.is_empty() {
         return Ok(StreamUpdate::Ignore);
     }
 
@@ -189,7 +193,7 @@ pub(crate) async fn post_chat(
                     return Err(last_error);
                 }
                 if let Some(seconds) = retry_after {
-                    delay = Duration::from_secs(seconds.min(30));
+                    delay = Duration::from_secs(seconds.min(30)).max(Duration::from_millis(500));
                 }
             }
             Ok(Err(error)) => {

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::env;
 use std::io::{self, IsTerminal, Write};
 
@@ -23,6 +24,7 @@ pub(crate) fn color_allowed() -> bool {
 struct Fence {
     indent: String,
     marker: char,
+    count: usize,
 }
 
 pub(crate) struct Renderer {
@@ -54,6 +56,22 @@ impl Renderer {
     #[cfg(test)]
     pub(crate) fn plain() -> Self {
         Self::new(false, false)
+    }
+
+    pub(crate) fn will_emit(&self, text: &str) -> bool {
+        if !self.markdown {
+            return !text.is_empty();
+        }
+
+        let Some(last_newline) = text.rfind('\n') else {
+            return false;
+        };
+        let complete = &text[..last_newline];
+        let (first, rest) = complete
+            .split_once('\n')
+            .map_or((complete, ""), |(first, rest)| (first, rest));
+        let first_blank = self.pending.trim().is_empty() && first.trim().is_empty();
+        !first_blank || rest.lines().any(|line| !line.trim().is_empty())
     }
 
     pub(crate) fn write(&mut self, text: &str, out: &mut impl Write) -> io::Result<()> {
@@ -92,24 +110,30 @@ impl Renderer {
     }
 
     fn render_line(&mut self, line: &str, out: &mut impl Write) -> io::Result<()> {
-        let trimmed = line.trim_start();
-        let indent = &line[..line.len() - trimmed.len()];
+        let indent_len: usize = line
+            .chars()
+            .take_while(|&character| character == ' ' || character == '\t')
+            .map(char::len_utf8)
+            .sum();
+        let indent = &line[..indent_len];
+        let trimmed = &line[indent_len..];
 
         if let Some(fence) = &self.fence {
-            if fence_close(trimmed, fence.marker) {
+            if fence_close(trimmed, indent, fence) {
                 self.write_fence_bottom(out)?;
                 self.fence = None;
             } else {
                 let content = line.strip_prefix(fence.indent.as_str()).unwrap_or(trimmed);
                 out.write_all(fence.indent.as_bytes())?;
                 self.write_styled(out, DIM, "│ ")?;
-                self.write_styled(out, CYAN, content)?;
+                self.write_styled(out, CYAN, &sanitize(content))?;
                 writeln!(out)?;
             }
             return Ok(());
         }
 
-        if let Some((marker, info)) = fence_open(trimmed) {
+        if let Some((marker, count, info)) = fence_open(trimmed) {
+            let info = sanitize(info);
             let label = if info.is_empty() {
                 String::new()
             } else {
@@ -121,6 +145,7 @@ impl Renderer {
             self.fence = Some(Fence {
                 indent: indent.to_string(),
                 marker,
+                count,
             });
             return Ok(());
         }
@@ -276,7 +301,7 @@ fn is_rule(line: &str) -> bool {
         && characters.all(|c| c == first)
 }
 
-fn fence_open(line: &str) -> Option<(char, &str)> {
+fn fence_open(line: &str) -> Option<(char, usize, &str)> {
     let marker = line.chars().next()?;
     if marker != '`' && marker != '~' {
         return None;
@@ -285,12 +310,35 @@ fn fence_open(line: &str) -> Option<(char, &str)> {
     if count < 3 {
         return None;
     }
-    Some((marker, line[count..].trim()))
+    let info = line[count..].trim();
+    if marker == '`' && info.contains('`') {
+        return None;
+    }
+    Some((marker, count, info))
 }
 
-fn fence_close(line: &str, marker: char) -> bool {
+fn fence_close(line: &str, indent: &str, fence: &Fence) -> bool {
     let line = line.trim_end();
-    line.chars().count() >= 3 && line.chars().all(|c| c == marker)
+    let count = line.chars().take_while(|&c| c == fence.marker).count();
+    count >= fence.count
+        && count == line.chars().count()
+        && indent.len() <= fence.indent.len().max(3)
+}
+
+fn sanitize(text: &str) -> Cow<'_, str> {
+    if !text.chars().any(char::is_control) {
+        return Cow::Borrowed(text);
+    }
+
+    Cow::Owned(
+        text.chars()
+            .map(|character| match character {
+                '\t' => '\t',
+                character if character.is_control() => ' ',
+                character => character,
+            })
+            .collect(),
+    )
 }
 
 fn render_inline(text: &str, base: &[&'static str], color: bool) -> String {
@@ -318,21 +366,22 @@ fn render_inline(text: &str, base: &[&'static str], color: bool) -> String {
                 if let Some((url, label)) = link.take()
                     && label != url
                 {
-                    inline.leaf(DIM, &format!(" <{url}>"));
+                    inline.leaf(DIM, &format!(" <{}>", sanitize(&url)));
                 }
             }
-            Event::Code(code) => inline.leaf(YELLOW, &code),
+            Event::Code(code) => inline.leaf(YELLOW, &sanitize(&code)),
             Event::Text(text) => {
+                let text = sanitize(&text);
                 if let Some((_, label)) = &mut link {
                     label.push_str(&text);
                 }
                 inline.text(&text);
             }
-            Event::Html(html) | Event::InlineHtml(html) => inline.text(&html),
+            Event::Html(html) | Event::InlineHtml(html) => inline.text(&sanitize(&html)),
             Event::SoftBreak | Event::HardBreak => inline.text(" "),
             Event::TaskListMarker(checked) => inline.text(checkbox(checked)),
-            Event::FootnoteReference(name) => inline.text(&format!("[^{name}]")),
-            Event::InlineMath(math) | Event::DisplayMath(math) => inline.text(&math),
+            Event::FootnoteReference(name) => inline.text(&format!("[^{}]", sanitize(&name))),
+            Event::InlineMath(math) | Event::DisplayMath(math) => inline.text(&sanitize(&math)),
             Event::Rule => inline.text("───"),
             Event::Start(_) | Event::End(_) => {}
         }
@@ -430,8 +479,10 @@ mod tests {
     fn streams_complete_lines_only() {
         let mut renderer = Renderer::new(true, false);
         let mut out = Vec::new();
+        assert!(!renderer.will_emit("hel"));
         renderer.write("hel", &mut out).unwrap();
         assert!(out.is_empty());
+        assert!(renderer.will_emit("lo\n"));
         renderer.write("lo\nworld", &mut out).unwrap();
         assert_eq!(String::from_utf8(out.clone()).unwrap(), "hello\n");
         renderer.finish(&mut out).unwrap();
@@ -456,6 +507,19 @@ mod tests {
         let tildes = render("```\ncode\n~~~\nmore\n```\n");
         assert!(tildes.contains("│ ~~~"));
         assert!(tildes.contains("│ more"));
+
+        let longer = render("````\ncode\n```\nmore\n````\n");
+        assert!(longer.contains("│ ```"));
+        assert!(longer.contains("│ more"));
+    }
+
+    #[test]
+    fn strips_terminal_control_characters() {
+        let output = render("hello \u{1b}[31mred\n```\nbody\u{1b}]0;title\u{7}\n```\n");
+        assert!(!output.contains('\u{1b}'));
+        assert!(!output.contains('\u{7}'));
+        assert!(output.contains("hello"));
+        assert!(output.contains("body"));
     }
 
     #[test]

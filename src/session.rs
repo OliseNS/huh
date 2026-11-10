@@ -1,9 +1,8 @@
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::storage::{LoadError, load_json, save_json, xdg_path};
+use crate::storage::{LoadError, backup_invalid, load_json, save_json, xdg_path};
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Message {
@@ -31,6 +30,10 @@ const MAX_HISTORY_MESSAGES: usize = 20;
 const MAX_HISTORY_CHARS: usize = 80_000;
 
 pub(crate) fn trim_history(messages: &mut Vec<Message>) {
+    debug_assert!(
+        messages.len().is_multiple_of(2),
+        "history must contain complete request/answer pairs"
+    );
     let mut chars: usize = messages
         .iter()
         .map(|message| message.content.chars().count())
@@ -62,29 +65,19 @@ fn valid_history(messages: &[Message]) -> bool {
             .all(|pair| pair[0].role == "user" && pair[1].role == "assistant")
 }
 
-fn backup_invalid_session(path: &Path) {
-    let backup = path.with_extension("json.bad");
-    if let Err(error) = fs::rename(path, &backup) {
-        eprintln!(
-            "warning: could not move invalid session to {}: {error}",
-            backup.display()
-        );
-    }
-}
-
 pub(crate) fn load_session() -> Result<Vec<Message>, String> {
     let path = state_path()?;
     match load_json::<Vec<Message>>(&path) {
         Ok(Some(messages)) if valid_history(&messages) => Ok(messages),
         Ok(Some(_)) => {
             eprintln!("warning: ignoring invalid session at {}", path.display());
-            backup_invalid_session(&path);
+            backup_invalid(&path);
             Ok(Vec::new())
         }
         Ok(None) => Ok(Vec::new()),
         Err(LoadError::Parse(error)) => {
             eprintln!("warning: ignoring invalid session ({error})");
-            backup_invalid_session(&path);
+            backup_invalid(&path);
             Ok(Vec::new())
         }
         Err(LoadError::Read(error)) => Err(error),
@@ -168,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn drops_the_anchor_when_it_alone_breaks_the_budget() {
+    fn drops_the_anchor_when_history_stays_over_budget() {
         let mut messages = conversation(3, 30_000);
         trim_history(&mut messages);
         assert_eq!(messages.len(), 2);

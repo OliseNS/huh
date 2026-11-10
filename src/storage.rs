@@ -11,11 +11,13 @@ pub(crate) enum LoadError {
     Parse(String),
 }
 
-impl LoadError {
-    pub(crate) fn into_message(self) -> String {
-        match self {
-            Self::Read(message) | Self::Parse(message) => message,
-        }
+pub(crate) fn backup_invalid(path: &Path) {
+    let backup = path.with_extension("json.bad");
+    if let Err(error) = fs::rename(path, &backup) {
+        eprintln!(
+            "warning: could not move invalid file to {}: {error}",
+            backup.display()
+        );
     }
 }
 
@@ -49,7 +51,11 @@ pub(crate) fn save_json<T: Serialize + ?Sized>(
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("data");
-    let temp = path.with_file_name(format!("{file_name}.{}.tmp", std::process::id()));
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temp = path.with_file_name(format!("{file_name}.{}.{nanos}.tmp", std::process::id()));
     write_private(&temp, contents.as_bytes())?;
     fs::rename(&temp, path).map_err(|error| format!("failed to save {}: {error}", path.display()))
 }
@@ -61,7 +67,9 @@ pub(crate) fn xdg_path(env_var: &str, fallback: &[&str], file: &str) -> Result<P
         return Ok(PathBuf::from(base).join("huh").join(file));
     }
 
-    let home = env::var_os("HOME").ok_or_else(|| "HOME is not set".to_string())?;
+    let home = env::var_os("HOME")
+        .filter(|value| !value.is_empty() && Path::new(value).is_absolute())
+        .ok_or_else(|| "HOME is not set to an absolute path".to_string())?;
     let mut path = PathBuf::from(home);
     path.extend(fallback);
     Ok(path.join("huh").join(file))
@@ -81,7 +89,7 @@ fn set_private_dir(_path: &Path) -> Result<(), String> {
 
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut options = OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
 
     #[cfg(unix)]
     {

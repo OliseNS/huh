@@ -105,9 +105,13 @@ fn build_prompt(options: &Options) -> Result<String, String> {
 }
 
 async fn run_request(options: Options, prompt: String) -> Result<(), String> {
-    let config = Config::load()?;
-    let api_key = config::resolved_api_key(&config)
-        .ok_or_else(|| "no API key found; run `huh --login`".to_string())?;
+    let api_key = match config::env_api_key() {
+        Some(api_key) => api_key,
+        None => Config::load()?
+            .api_key()
+            .map(str::to_owned)
+            .ok_or_else(|| "no API key found; run `huh --login`".to_string())?,
+    };
     let env_model = config::env_model();
     let model = options
         .model

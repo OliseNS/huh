@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::storage::{load_json, save_json, xdg_path};
+use crate::storage::{LoadError, backup_invalid, load_json, save_json, xdg_path};
 use crate::util::{env_value, non_empty, read_secret};
 
 pub(crate) const DEFAULT_MODEL: &str = "deepseek/deepseek-v4.1-flash-1017:nitro";
@@ -16,9 +16,17 @@ pub(crate) struct Config {
 
 impl Config {
     pub(crate) fn load() -> Result<Self, String> {
-        Ok(load_json(&config_path()?)
-            .map_err(crate::storage::LoadError::into_message)?
-            .unwrap_or_default())
+        let path = config_path()?;
+        match load_json(&path) {
+            Ok(Some(config)) => Ok(config),
+            Ok(None) => Ok(Self::default()),
+            Err(LoadError::Parse(error)) => {
+                eprintln!("warning: ignoring invalid config ({error})");
+                backup_invalid(&path);
+                Ok(Self::default())
+            }
+            Err(LoadError::Read(error)) => Err(error),
+        }
     }
 
     fn save(&self) -> Result<PathBuf, String> {
@@ -42,10 +50,6 @@ pub(crate) fn env_api_key() -> Option<String> {
 
 pub(crate) fn env_model() -> Option<String> {
     env_value("HUH_MODEL")
-}
-
-pub(crate) fn resolved_api_key(config: &Config) -> Option<String> {
-    env_api_key().or_else(|| config.api_key().map(str::to_owned))
 }
 
 fn update_config(update: impl FnOnce(&mut Config)) -> Result<PathBuf, String> {
@@ -92,7 +96,10 @@ pub(crate) fn show_config(base_url: &str) -> Result<(), String> {
     println!("config:    {}", path.display());
     println!("api key:   {api_key}");
     println!("base url:  {base_url}");
-    println!("model:     {DEFAULT_MODEL} (override with -m or HUH_MODEL)");
+    match env_model() {
+        Some(model) => println!("model:     {model} (HUH_MODEL)"),
+        None => println!("model:     {DEFAULT_MODEL} (default; override with -m or HUH_MODEL)"),
+    }
     Ok(())
 }
 

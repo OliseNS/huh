@@ -56,6 +56,10 @@ impl Spinner {
         }
     }
 
+    fn is_active(&self) -> bool {
+        self.handle.is_some()
+    }
+
     fn stop(&mut self) {
         let Some(handle) = self.handle.take() else {
             return;
@@ -85,15 +89,27 @@ pub(crate) async fn stream_answer(
     state.spinner = spinner;
     let mut stream = response.bytes_stream();
     let mut pending: Vec<u8> = Vec::new();
+    let mut failure = None;
 
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| format!("stream failed: {error}"))?;
+    'stream: while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                failure = Some(format!("stream failed: {error}"));
+                break;
+            }
+        };
         pending.extend_from_slice(&chunk);
 
         let mut start = 0;
         while let Some(offset) = pending[start..].iter().position(|&byte| byte == b'\n') {
             let end = start + offset;
-            state.handle_line(&String::from_utf8_lossy(&pending[start..end]), &mut out)?;
+            if let Err(error) =
+                state.handle_line(&String::from_utf8_lossy(&pending[start..end]), &mut out)
+            {
+                failure = Some(error);
+                break 'stream;
+            }
             start = end + 1;
         }
         if start > 0 {
@@ -101,12 +117,23 @@ pub(crate) async fn stream_answer(
         }
     }
 
-    if !pending.is_empty() {
-        state.handle_line(&String::from_utf8_lossy(&pending), &mut out)?;
+    if failure.is_none()
+        && !pending.is_empty()
+        && let Err(error) = state.handle_line(&String::from_utf8_lossy(&pending), &mut out)
+    {
+        failure = Some(error);
     }
 
     let elapsed = request_start.elapsed();
-    state.finish(&mut out)?;
+    let finish = state.finish(&mut out);
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    finish?;
+
+    if !state.done && !state.answer.is_empty() {
+        eprintln!("warning: stream ended without [DONE]; answer may be incomplete");
+    }
     state.report_tps(elapsed);
     Ok(state.answer)
 }
@@ -117,6 +144,7 @@ struct StreamState {
     fallback_chars: u64,
     usage_tokens: Option<u64>,
     answer: String,
+    done: bool,
 }
 
 impl StreamState {
@@ -127,12 +155,17 @@ impl StreamState {
             fallback_chars: 0,
             usage_tokens: None,
             answer: String::new(),
+            done: false,
         }
     }
 
     fn handle_line(&mut self, line: &str, out: &mut impl Write) -> Result<(), String> {
         match parse_stream_line(line)? {
             StreamUpdate::Ignore => Ok(()),
+            StreamUpdate::Done => {
+                self.done = true;
+                Ok(())
+            }
             StreamUpdate::Error(message) => Err(format!("stream error: {message}")),
             StreamUpdate::Delta {
                 content,
@@ -143,15 +176,15 @@ impl StreamState {
                     self.usage_tokens = Some(tokens);
                 }
 
-                let generated_chars = content.as_ref().map_or(0, |text| text.chars().count())
-                    + reasoning.as_ref().map_or(0, |text| text.chars().count());
-
-                if generated_chars > 0 {
-                    self.spinner.stop();
-                    self.fallback_chars += generated_chars as u64;
+                if let Some(reasoning) = reasoning {
+                    self.fallback_chars += reasoning.chars().count() as u64;
                 }
 
                 if let Some(text) = content {
+                    self.fallback_chars += text.chars().count() as u64;
+                    if self.spinner.is_active() && self.renderer.will_emit(&text) {
+                        self.spinner.stop();
+                    }
                     self.answer.push_str(&text);
                     self.renderer
                         .write(&text, out)
@@ -230,6 +263,7 @@ mod tests {
         state.handle_line("", &mut out).unwrap();
         state.handle_line("data: [DONE]", &mut out).unwrap();
         state.finish(&mut out).unwrap();
+        assert!(state.done);
         assert_eq!(String::from_utf8(out).unwrap(), "hello\n");
         assert_eq!(state.answer, "hello\n");
     }
