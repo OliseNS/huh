@@ -14,11 +14,11 @@ fi
 cargo build --release --locked
 
 install -d "$BIN_DIR"
-install -m 0755 target/release/idk "$BIN_DIR/idk"
+install -m 0755 target/release/huh "$BIN_DIR/huh"
 
-echo "Installed idk to $BIN_DIR/idk"
+echo "Installed huh to $BIN_DIR/huh"
 
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
-    *) echo "note: add $BIN_DIR to your PATH to run 'idk' from anywhere" ;;
+    *) echo "note: add $BIN_DIR to your PATH to run 'huh' from anywhere" ;;
 esac

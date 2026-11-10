@@ -1,6 +1,6 @@
-# idk
+# huh
 
-Ask a question from your terminal and get a short, streaming answer. `idk` talks to
+Ask a question from your terminal and get a short, streaming answer. `huh` talks to
 [OpenRouter](https://openrouter.ai) using the OpenAI-compatible chat completions API.
 
 Answers stream as they arrive. When stdout is a terminal, Markdown is rendered with
@@ -9,6 +9,9 @@ Markdown. Set `NO_COLOR=1` to disable colors. While waiting for the first token,
 spinner is shown on stderr when it is a terminal, and token throughput is reported
 there too when stderr is a terminal.
 
+Web search is on by default: the model decides when a question needs current
+information and searches only then. Pass `--search` to force a search.
+
 ## Requirements
 
 - A Rust toolchain (install via [rustup](https://rustup.rs))
@@ -16,13 +19,13 @@ there too when stderr is a terminal.
 
 ## Install
 
+From a clone of this repository:
+
 ```sh
-git clone https://github.com/OliseNS/idk.git
-cd idk
 ./.install.sh
 ```
 
-The install script builds a release binary and copies it to `~/.local/bin/idk`.
+The install script builds a release binary and copies it to `~/.local/bin/huh`.
 Override the destination with `BIN_DIR`:
 
 ```sh
@@ -40,7 +43,7 @@ cargo install --path . --locked
 Save your API key once:
 
 ```sh
-idk --login
+huh --login
 ```
 
 Or provide it through the environment (this overrides the saved key):
@@ -49,35 +52,51 @@ Or provide it through the environment (this overrides the saved key):
 export OPENROUTER_API_KEY="sk-..."
 ```
 
-The config lives at `${XDG_CONFIG_HOME:-$HOME/.config}/idk/config.json` and is created
+The config lives at `${XDG_CONFIG_HOME:-$HOME/.config}/huh/config.json` and is created
 with private permissions.
 
 ## Usage
 
 ```sh
-idk "why is the sky blue?"
-echo "explain closures in Rust" | idk
-idk -- "what does -v mean?"
-idk --search "what happened in the news today?"
+huh "why is the sky blue?"
+echo "explain closures in Rust" | huh
+huh -- "what does -v mean?"
+huh --search "what happened in the news today?"
 ```
 
-`--search` (or `-s`) grounds the answer with [OpenRouter's web search
-plugin](https://openrouter.ai/docs/features/web-search), which adds a per-request
-search fee on top of model usage. Results are cited as Markdown links.
+Plain `huh` starts a fresh conversation and replaces the saved session. Use `-c` (or
+`--continue`) to follow up on the previous conversation:
+
+```sh
+huh "explain Rust ownership"
+huh -c "now show a small example"
+```
+
+The session lives at `${XDG_STATE_HOME:-$HOME/.local/state}/huh/session.json`. `huh -c`
+loads the stored messages, appends the new question, and saves the answer for the next
+follow-up. History is capped at 5 question-and-answer pairs (10 messages) and roughly
+40,000 characters; the oldest pairs are dropped first.
+
+Web search uses [OpenRouter's web search server
+tool](https://openrouter.ai/docs/guides/features/server-tools/web-search), which adds a
+per-search fee on top of model usage. Results are cited as Markdown links.
 
 Per-request flags override the saved configuration:
 
 ```sh
-idk -m openai/gpt-5-mini "summarize this diff"
-idk -e low "what is a monad?"
+huh -m openai/gpt-5-mini "summarize this diff"
+huh -e low "what is a monad?"
 ```
 
-### Commands
+### Options and commands
 
-| Command                         | Description                              |
+| Option / command                | Description                              |
 | ------------------------------- | ---------------------------------------- |
-| `-s`, `--search`             | Ground the answer with web search        |
-| `--login`                    | Save your OpenRouter API key             |
+| `-c`, `--continue`              | Continue the previous conversation       |
+| `-s`, `--search`                | Force a web search                       |
+| `-m`, `--model <name>`          | Model for this request                   |
+| `-e`, `--effort <low\|medium\|high>` | Reasoning effort for this request   |
+| `--login`                       | Save your OpenRouter API key             |
 | `--logout`                      | Remove the saved API key                 |
 | `--set-model <name>`            | Save the default model                   |
 | `--set-effort <low\|medium\|high>` | Save the default reasoning effort     |
@@ -103,6 +122,7 @@ cargo clippy --all-targets -- -D warnings
 ## Uninstall
 
 ```sh
-rm "$HOME/.local/bin/idk"
-rm -r "${XDG_CONFIG_HOME:-$HOME/.config}/idk"
+rm "$HOME/.local/bin/huh"
+rm -r "${XDG_CONFIG_HOME:-$HOME/.config}/huh"
+rm -r "${XDG_STATE_HOME:-$HOME/.local/state}/huh"
 ```
