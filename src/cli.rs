@@ -6,7 +6,7 @@ use crate::util::non_empty;
 pub(crate) fn help() -> String {
     format!(
         "\
-huh - ask an LLM from your terminal
+huh - ask a question from your terminal
 
 USAGE
   huh [options] <question>
