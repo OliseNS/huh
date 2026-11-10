@@ -6,8 +6,9 @@ Ask a question from your terminal and get a short, streaming answer. `huh` talks
 [OpenRouter](https://openrouter.ai) using the OpenAI-compatible chat completions API.
 
 Answers stream as they arrive. When stdout is a terminal, Markdown is rendered with
-colored headings, lists, code blocks, links, inline code, and aligned tables; piped
-output stays raw Markdown. Set `NO_COLOR=1` to disable colors. While waiting for the
+colored headings, lists, code blocks, links, inline code, and aligned tables that wrap
+to the terminal width; piped output stays raw Markdown. Set `NO_COLOR=1` to disable
+colors. While waiting for the
 first visible output, a spinner is shown on stderr when it is a terminal, and end-to-end
 token throughput is reported there too when stderr is a terminal.
 

@@ -3,6 +3,7 @@ use std::env;
 use std::io::{self, IsTerminal, Write};
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use unicode_width::UnicodeWidthChar;
 
 pub(crate) const RESET: &str = "\x1b[0m";
 pub(crate) const GREEN: &str = "\x1b[32m";
@@ -35,14 +36,41 @@ enum Align {
 }
 
 struct Table {
+    indent: String,
     header: Vec<String>,
     align: Vec<Align>,
     rows: Vec<Vec<String>>,
 }
 
+struct Cell {
+    runs: Vec<Run>,
+    natural: usize,
+    longest_word: usize,
+}
+
+impl Cell {
+    fn new(text: &str, base: &[&'static str]) -> Self {
+        let text = text.replace('\t', "    ");
+        let runs = inline_runs(&text, base);
+        let natural = runs_width(&runs).max(1);
+        let longest_word = words(&runs)
+            .iter()
+            .map(|word| runs_width(word))
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        Self {
+            runs,
+            natural,
+            longest_word,
+        }
+    }
+}
+
 pub(crate) struct Renderer {
     markdown: bool,
     color: bool,
+    width: usize,
     pending: String,
     fence: Option<Fence>,
     table: Option<Table>,
@@ -54,13 +82,23 @@ pub(crate) struct Renderer {
 impl Renderer {
     pub(crate) fn stdout() -> Self {
         let markdown = io::stdout().is_terminal();
-        Self::new(markdown, markdown && color_allowed())
+        let mut renderer = Self::new(markdown, markdown && color_allowed());
+        renderer.width = 0;
+        renderer
+    }
+
+    #[cfg(test)]
+    fn with_width(markdown: bool, color: bool, width: usize) -> Self {
+        let mut renderer = Self::new(markdown, color);
+        renderer.width = width;
+        renderer
     }
 
     fn new(markdown: bool, color: bool) -> Self {
         Self {
             markdown,
             color,
+            width: 80,
             pending: String::new(),
             fence: None,
             table: None,
@@ -202,6 +240,7 @@ impl Renderer {
         if let Some((header_indent, header)) = self.table_header.take() {
             if let Some(align) = delimiter_alignments(trimmed) {
                 self.table = Some(Table {
+                    indent: header_indent,
                     header: split_row(&header),
                     align,
                     rows: Vec::new(),
@@ -279,8 +318,8 @@ impl Renderer {
         text: &str,
         base: &[&'static str],
     ) -> io::Result<()> {
-        let rendered = render_inline(text, base, self.color);
-        out.write_all(rendered.as_bytes())?;
+        let runs = inline_runs(text, base);
+        self.write_runs(out, &runs)?;
         writeln!(out)
     }
 
@@ -303,52 +342,94 @@ impl Renderer {
         let align: Vec<Align> = (0..columns)
             .map(|index| table.align.get(index).copied().unwrap_or(Align::Left))
             .collect();
-        let header: Vec<String> = (0..columns)
+        let header: Vec<Cell> = (0..columns)
             .map(|index| {
-                render_inline(
+                Cell::new(
                     table.header.get(index).map_or("", String::as_str),
                     &[HEADING],
-                    self.color,
                 )
             })
             .collect();
-        let rows: Vec<Vec<String>> = table
+        let rows: Vec<Vec<Cell>> = table
             .rows
             .iter()
             .map(|row| {
                 (0..columns)
-                    .map(|index| {
-                        render_inline(row.get(index).map_or("", String::as_str), &[], self.color)
-                    })
+                    .map(|index| Cell::new(row.get(index).map_or("", String::as_str), &[]))
                     .collect()
             })
             .collect();
 
-        let mut widths = vec![1usize; columns];
-        for (index, cell) in header.iter().enumerate() {
-            widths[index] = widths[index].max(display_width(cell));
-        }
-        for row in &rows {
-            for (index, cell) in row.iter().enumerate() {
-                widths[index] = widths[index].max(display_width(cell));
+        let natural: Vec<usize> = (0..columns)
+            .map(|index| {
+                rows.iter()
+                    .map(|row| row[index].natural)
+                    .max()
+                    .unwrap_or(0)
+                    .max(header[index].natural)
+                    .max(1)
+            })
+            .collect();
+        let minima: Vec<usize> = (0..columns)
+            .map(|index| {
+                rows.iter()
+                    .map(|row| row[index].longest_word)
+                    .max()
+                    .unwrap_or(0)
+                    .max(header[index].longest_word)
+                    .max(1)
+            })
+            .collect();
+
+        let indent = &table.indent;
+        let available = self
+            .terminal_width()
+            .saturating_sub(indent.chars().count())
+            .max(1);
+        let chrome = columns * 3 + 1;
+        let content = available.saturating_sub(chrome);
+        let widths = if natural.iter().sum::<usize>() <= content {
+            natural.clone()
+        } else {
+            match allocate_widths(&natural, &minima, content) {
+                Some(widths) => widths,
+                None => return self.write_stacked_table(out, indent, &header, &rows, available),
             }
-        }
+        };
+
+        let header_lines: Vec<Vec<Vec<Run>>> = header
+            .iter()
+            .zip(&widths)
+            .map(|(cell, width)| wrap_runs(&cell.runs, *width))
+            .collect();
+        let row_lines: Vec<Vec<Vec<Vec<Run>>>> = rows
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .zip(&widths)
+                    .map(|(cell, width)| wrap_runs(&cell.runs, *width))
+                    .collect()
+            })
+            .collect();
 
         let border = |left: &str, middle: &str, right: &str| {
             let segments: Vec<String> = widths.iter().map(|width| "─".repeat(width + 2)).collect();
             format!("{left}{}{right}", segments.join(middle))
         };
 
+        out.write_all(indent.as_bytes())?;
         self.write_styled(out, CYAN, &border("┌", "┬", "┐"))?;
         writeln!(out)?;
-        self.write_table_row(out, &header, &widths, &align)?;
+        self.write_table_row(out, indent, &header_lines, &widths, &align)?;
         if !rows.is_empty() {
+            out.write_all(indent.as_bytes())?;
             self.write_styled(out, CYAN, &border("├", "┼", "┤"))?;
             writeln!(out)?;
-            for row in &rows {
-                self.write_table_row(out, row, &widths, &align)?;
+            for row in &row_lines {
+                self.write_table_row(out, indent, row, &widths, &align)?;
             }
         }
+        out.write_all(indent.as_bytes())?;
         self.write_styled(out, CYAN, &border("└", "┴", "┘"))?;
         writeln!(out)
     }
@@ -356,29 +437,126 @@ impl Renderer {
     fn write_table_row(
         &self,
         out: &mut impl Write,
-        cells: &[String],
+        indent: &str,
+        cells: &[Vec<Vec<Run>>],
         widths: &[usize],
         align: &[Align],
     ) -> io::Result<()> {
-        self.write_styled(out, CYAN, "│")?;
-        for ((cell, width), align) in cells.iter().zip(widths).zip(align) {
-            let padding = width.saturating_sub(display_width(cell));
-            let (left, right) = match align {
-                Align::Left => (0, padding),
-                Align::Right => (padding, 0),
-                Align::Center => (padding / 2, padding - padding / 2),
-            };
-            out.write_all(b" ")?;
-            for _ in 0..left {
+        let height = cells.iter().map(Vec::len).max().unwrap_or(1).max(1);
+        for row_index in 0..height {
+            out.write_all(indent.as_bytes())?;
+            self.write_styled(out, CYAN, "│")?;
+            for (index, width) in widths.iter().enumerate() {
+                let line = cells
+                    .get(index)
+                    .and_then(|lines| lines.get(row_index))
+                    .map_or(&[][..], Vec::as_slice);
+                let used = runs_width(line).min(*width);
+                let padding = width.saturating_sub(used);
+                let (left, right) = match align[index] {
+                    Align::Left => (0, padding),
+                    Align::Right => (padding, 0),
+                    Align::Center => (padding / 2, padding - padding / 2),
+                };
                 out.write_all(b" ")?;
+                for _ in 0..left {
+                    out.write_all(b" ")?;
+                }
+                self.write_runs(out, line)?;
+                for _ in 0..right {
+                    out.write_all(b" ")?;
+                }
+                self.write_styled(out, CYAN, " │")?;
             }
-            out.write_all(cell.as_bytes())?;
-            for _ in 0..right {
-                out.write_all(b" ")?;
-            }
-            self.write_styled(out, CYAN, " │")?;
+            writeln!(out)?;
         }
-        writeln!(out)
+        Ok(())
+    }
+
+    fn write_stacked_table(
+        &self,
+        out: &mut impl Write,
+        indent: &str,
+        header: &[Cell],
+        rows: &[Vec<Cell>],
+        width: usize,
+    ) -> io::Result<()> {
+        if rows.is_empty() {
+            let mut runs = Vec::new();
+            for (index, cell) in header.iter().enumerate() {
+                if index > 0 {
+                    push_fragment(&mut runs, " · ", &[]);
+                }
+                append_runs(&mut runs, &cell.runs);
+            }
+            return self.write_stacked_lines(out, indent, &runs, width);
+        }
+
+        for (row_index, row) in rows.iter().enumerate() {
+            if row_index > 0 {
+                writeln!(out)?;
+            }
+            for (index, cell) in row.iter().enumerate() {
+                if cell.runs.is_empty() {
+                    continue;
+                }
+                let mut runs = Vec::new();
+                if index > 0
+                    && let Some(label) = header.get(index).filter(|label| !label.runs.is_empty())
+                {
+                    append_runs(&mut runs, &label.runs);
+                    push_fragment(&mut runs, ": ", &[]);
+                }
+                append_runs(&mut runs, &cell.runs);
+                self.write_stacked_lines(out, indent, &runs, width)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn write_stacked_lines(
+        &self,
+        out: &mut impl Write,
+        indent: &str,
+        runs: &[Run],
+        width: usize,
+    ) -> io::Result<()> {
+        for line in wrap_runs(runs, width.saturating_sub(2).max(1)) {
+            out.write_all(indent.as_bytes())?;
+            out.write_all(b"  ")?;
+            self.write_runs(out, &line)?;
+            writeln!(out)?;
+        }
+        Ok(())
+    }
+
+    fn write_runs(&self, out: &mut impl Write, runs: &[Run]) -> io::Result<()> {
+        if !self.color {
+            for run in runs {
+                out.write_all(run.text.as_bytes())?;
+            }
+            return Ok(());
+        }
+
+        for run in runs {
+            out.write_all(RESET.as_bytes())?;
+            for style in &run.styles {
+                out.write_all(style.as_bytes())?;
+            }
+            out.write_all(run.text.as_bytes())?;
+        }
+        if !runs.is_empty() {
+            out.write_all(RESET.as_bytes())?;
+        }
+        Ok(())
+    }
+
+    fn terminal_width(&self) -> usize {
+        if self.width > 0 {
+            self.width
+        } else {
+            terminal_width()
+        }
     }
 
     fn write_fence_bottom(&self, out: &mut impl Write) -> io::Result<()> {
@@ -567,27 +745,71 @@ fn delimiter_alignments(line: &str) -> Option<Vec<Align>> {
     Some(alignments)
 }
 
-fn display_width(text: &str) -> usize {
-    let mut width = 0;
-    let mut escaped = false;
-    for character in text.chars() {
-        if escaped {
-            if character == 'm' {
-                escaped = false;
-            }
-        } else if character == '\x1b' {
-            escaped = true;
-        } else {
-            width += 1;
-        }
-    }
-    width
+fn terminal_width() -> usize {
+    crossterm::terminal::size()
+        .map(|(width, _)| width as usize)
+        .unwrap_or(80)
+        .max(1)
 }
 
-fn render_inline(text: &str, base: &[&'static str], color: bool) -> String {
+fn allocate_widths(natural: &[usize], minima: &[usize], available: usize) -> Option<Vec<usize>> {
+    if natural.iter().sum::<usize>() <= available {
+        return Some(natural.to_vec());
+    }
+
+    let minimum: usize = minima.iter().sum();
+    if minimum > available {
+        return None;
+    }
+
+    let flex: Vec<usize> = natural
+        .iter()
+        .zip(minima)
+        .map(|(natural, minimum)| natural.saturating_sub(*minimum))
+        .collect();
+    let total_flex: usize = flex.iter().sum();
+    let extra = available - minimum;
+    let mut widths = minima.to_vec();
+
+    let divisor = total_flex.max(1);
+    let mut used = 0;
+    for (index, flex) in flex.iter().enumerate() {
+        let add = extra * flex / divisor;
+        widths[index] += add;
+        used += add;
+    }
+
+    let mut leftover = extra - used;
+    while leftover > 0 {
+        let mut progressed = false;
+        for index in 0..widths.len() {
+            if leftover == 0 {
+                break;
+            }
+            if widths[index] < natural[index] {
+                widths[index] += 1;
+                leftover -= 1;
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+
+    Some(widths)
+}
+
+#[derive(Clone)]
+struct Run {
+    text: String,
+    styles: Vec<&'static str>,
+}
+
+fn inline_runs(text: &str, base: &[&'static str]) -> Vec<Run> {
     let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
 
-    let mut inline = Inline::new(base, color, text.len() + 16);
+    let mut inline = Inline::new(base);
     let mut link: Option<(String, String)> = None;
 
     for event in Parser::new_ext(text, options) {
@@ -634,67 +856,187 @@ fn render_inline(text: &str, base: &[&'static str], color: bool) -> String {
 }
 
 struct Inline {
-    color: bool,
     styles: Vec<&'static str>,
-    output: String,
+    runs: Vec<Run>,
 }
 
 impl Inline {
-    fn new(base: &[&'static str], color: bool, capacity: usize) -> Self {
-        let mut inline = Self {
-            color,
+    fn new(base: &[&'static str]) -> Self {
+        Self {
             styles: base.to_vec(),
-            output: String::with_capacity(capacity),
-        };
-        if color {
-            for style in &inline.styles {
-                inline.output.push_str(style);
-            }
+            runs: Vec::new(),
         }
-        inline
     }
 
     fn text(&mut self, text: &str) {
-        self.output.push_str(text);
+        self.push_fragment(text, &[]);
     }
 
     fn push(&mut self, style: &'static str) {
         self.styles.push(style);
-        if self.color {
-            self.output.push_str(style);
-        }
     }
 
     fn pop(&mut self) {
         self.styles.pop();
-        self.reapply();
     }
 
     fn leaf(&mut self, style: &'static str, text: &str) {
-        if self.color {
-            self.output.push_str(RESET);
-            self.output.push_str(style);
-        }
-        self.output.push_str(text);
-        self.reapply();
+        self.push_fragment(text, &[style]);
     }
 
-    fn reapply(&mut self) {
-        if !self.color {
+    fn push_fragment(&mut self, text: &str, extra: &[&'static str]) {
+        if text.is_empty() {
             return;
         }
-        self.output.push_str(RESET);
-        for style in &self.styles {
-            self.output.push_str(style);
+        let mut styles = self.styles.clone();
+        styles.extend_from_slice(extra);
+        push_fragment(&mut self.runs, text, &styles);
+    }
+
+    fn finish(self) -> Vec<Run> {
+        self.runs
+    }
+}
+
+fn push_fragment(target: &mut Vec<Run>, text: &str, styles: &[&'static str]) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(last) = target.last_mut()
+        && last.styles.as_slice() == styles
+    {
+        last.text.push_str(text);
+        return;
+    }
+    target.push(Run {
+        text: text.to_string(),
+        styles: styles.to_vec(),
+    });
+}
+
+fn append_runs(target: &mut Vec<Run>, runs: &[Run]) {
+    for run in runs {
+        push_fragment(target, &run.text, &run.styles);
+    }
+}
+
+fn words(runs: &[Run]) -> Vec<Vec<Run>> {
+    let mut words = Vec::new();
+    let mut current = Vec::new();
+    for run in runs {
+        for character in run.text.chars() {
+            if character.is_whitespace() {
+                if !current.is_empty() {
+                    words.push(std::mem::take(&mut current));
+                }
+            } else {
+                push_char(&mut current, character, &run.styles);
+            }
+        }
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
+}
+
+fn push_char(target: &mut Vec<Run>, character: char, styles: &[&'static str]) {
+    if let Some(last) = target.last_mut()
+        && last.styles.as_slice() == styles
+    {
+        last.text.push(character);
+        return;
+    }
+    target.push(Run {
+        text: character.to_string(),
+        styles: styles.to_vec(),
+    });
+}
+
+fn wrap_runs(runs: &[Run], width: usize) -> Vec<Vec<Run>> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    let mut line = Vec::new();
+    let mut line_width = 0;
+
+    for word in words(runs) {
+        let word_width = runs_width(&word);
+        if line.is_empty() {
+            if word_width <= width {
+                line = word;
+                line_width = word_width;
+            } else {
+                let mut chunks = split_word(&word, width);
+                if let Some(last) = chunks.pop() {
+                    lines.extend(chunks);
+                    line_width = runs_width(&last);
+                    line = last;
+                }
+            }
+        } else if line_width + 1 + word_width <= width {
+            push_fragment(&mut line, " ", &[]);
+            line_width += 1;
+            append_runs(&mut line, &word);
+            line_width += word_width;
+        } else {
+            lines.push(std::mem::take(&mut line));
+            line_width = 0;
+            if word_width <= width {
+                line = word;
+                line_width = word_width;
+            } else {
+                let mut chunks = split_word(&word, width);
+                if let Some(last) = chunks.pop() {
+                    lines.extend(chunks);
+                    line_width = runs_width(&last);
+                    line = last;
+                }
+            }
         }
     }
 
-    fn finish(mut self) -> String {
-        if self.color {
-            self.output.push_str(RESET);
-        }
-        self.output
+    if !line.is_empty() {
+        lines.push(line);
     }
+    if lines.is_empty() {
+        lines.push(Vec::new());
+    }
+    lines
+}
+
+fn split_word(word: &[Run], width: usize) -> Vec<Vec<Run>> {
+    let mut chunks = Vec::new();
+    let mut chunk = Vec::new();
+    let mut chunk_width = 0;
+
+    for run in word {
+        for character in run.text.chars() {
+            let glyph_width = char_width(character);
+            if chunk_width + glyph_width > width && !chunk.is_empty() {
+                chunks.push(std::mem::take(&mut chunk));
+                chunk_width = 0;
+            }
+            push_char(&mut chunk, character, &run.styles);
+            chunk_width += glyph_width;
+        }
+    }
+
+    if !chunk.is_empty() {
+        chunks.push(chunk);
+    }
+    chunks
+}
+
+fn runs_width(runs: &[Run]) -> usize {
+    runs.iter().map(|run| text_width(&run.text)).sum()
+}
+
+fn text_width(text: &str) -> usize {
+    text.chars().map(char_width).sum()
+}
+
+fn char_width(character: char) -> usize {
+    UnicodeWidthChar::width(character).unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -707,6 +1049,32 @@ mod tests {
         renderer.write(input, &mut out).unwrap();
         renderer.finish(&mut out).unwrap();
         String::from_utf8(out).unwrap()
+    }
+
+    fn render_at(input: &str, width: usize) -> String {
+        let mut renderer = Renderer::with_width(true, false, width);
+        let mut out = Vec::new();
+        renderer.write(input, &mut out).unwrap();
+        renderer.finish(&mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    fn render_colored_at(input: &str, width: usize) -> String {
+        let mut renderer = Renderer::with_width(true, true, width);
+        let mut out = Vec::new();
+        renderer.write(input, &mut out).unwrap();
+        renderer.finish(&mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    fn assert_fits(output: &str, width: usize) {
+        for line in output.lines() {
+            assert!(
+                text_width(line) <= width,
+                "line is {} columns wide (max {width}): {line}",
+                text_width(line)
+            );
+        }
     }
 
     #[test]
@@ -797,5 +1165,68 @@ mod tests {
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains(HEADING));
         assert!(output.ends_with(RESET) || output.contains(RESET));
+    }
+
+    #[test]
+    fn wraps_tables_to_the_terminal_width() {
+        let input = "\
+| Property | How it helps the huh API client |
+| --- | --- |
+| Memory safety without GC | No dangling pointers or buffer overruns can corrupt the request/response handling; the compiler guarantees all data lives long enough for the async-like streaming logic. |
+| Strong typing | Enums and structs enforce only valid states, eliminating many classes of bugs. |
+";
+        let output = render_at(input, 60);
+        assert_fits(&output, 60);
+        assert!(output.contains("Memory"));
+        assert!(output.contains("request/response"));
+        assert!(output.contains("bugs."));
+    }
+
+    #[test]
+    fn keeps_tables_at_their_natural_width_when_they_fit() {
+        let input = "| Name | Link |\n|:---|---:|\n| Example | [docs](https://example.com) |\n";
+        let output = render_at(input, 100);
+        assert_fits(&output, 100);
+        assert!(output.contains("┌"));
+        assert!(output.contains("Example"));
+    }
+
+    #[test]
+    fn stacks_tables_that_cannot_fit() {
+        let input = "\
+| LongHeader | OtherHeader |
+| --- | --- |
+| abcdefghijklmnop | qrstuvwxyzabcdef |
+";
+        let output = render_at(input, 20);
+        assert_fits(&output, 20);
+        assert!(output.contains("abcdefghijklmnop"));
+        assert!(output.contains("OtherHeader:"));
+        assert!(!output.contains('┌'));
+    }
+
+    #[test]
+    fn aligns_wide_characters() {
+        let output = render_at("| 名前 | Value |\n| --- | --- |\n| 日本 | ok |\n", 40);
+        let widths: Vec<usize> = output
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(text_width)
+            .collect();
+        assert!(widths.windows(2).all(|pair| pair[0] == pair[1]));
+    }
+
+    #[test]
+    fn keeps_inline_styles_inside_wrapped_cells() {
+        let input = "\
+| A | B |
+| --- | --- |
+| **bold words here** | `code` and [link](https://example.com) text |
+";
+        let output = render_colored_at(input, 40);
+        assert!(output.contains(BOLD));
+        assert!(output.contains(YELLOW));
+        assert!(output.contains(BLUE));
+        assert!(!output.contains("**"));
     }
 }
