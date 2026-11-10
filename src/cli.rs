@@ -24,7 +24,7 @@ COMMANDS
   --login                       save your OpenRouter API key
   --logout                      remove the saved key
   --config                      show configuration
-  -u, --update                  rebuild and install
+  -u, --update                  rebuild and install from source
   -V, --version
   -h, --help
 

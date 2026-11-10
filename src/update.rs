@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const REPO_URL: &str = "https://github.com/OliseNS/idk.git";
+const REPO_URL: &str = "https://github.com/OliseNS/huh.git";
 
 pub(crate) fn run() -> Result<(), String> {
     let source = source_dir()?;
@@ -44,7 +44,7 @@ fn source_dir() -> Result<PathBuf, String> {
     }
 
     Err(format!(
-        "source tree not found; update with:\n  cargo install --git {REPO_URL} --locked --force"
+        "source tree not found; reinstall with:\n  curl -LsSf https://olisemeka.dev/huh/install.sh | sh\nor:\n  cargo install --git {REPO_URL} --locked --force"
     ))
 }
 
