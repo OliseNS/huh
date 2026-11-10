@@ -1,113 +1,77 @@
 <p align="center">
-  <img src="assets/huh-logo.svg" alt="huh!" width="280">
+  <img src="assets/huh-logo.svg" alt="huh?" width="280">
 </p>
 
-Ask a question from your terminal and get a short, streaming answer. `huh` talks to
-[OpenRouter](https://openrouter.ai) using the OpenAI-compatible chat completions API.
-
-Answers stream as they arrive. When stdout is a terminal, Markdown is rendered with
-colored headings, lists, code blocks, links, inline code, and aligned tables that wrap
-to the terminal width; piped output stays raw Markdown. Set `NO_COLOR=1` to disable
-colors. While waiting for the
-first visible output, a spinner is shown on stderr when it is a terminal, and end-to-end
-token throughput is reported there too when stderr is a terminal.
-
-Web search is on by default: the model decides when a question needs current
-information and searches only then. `-s` forces a search; `-ns` disables it.
+`huh` is a small assistant for your terminal. Ask a question in plain English and get a short, readable answer without opening a browser or leaving the shell.
 
 ![huh answering a Git question in the terminal](assets/huh-demo.png)
 
-The interactive file picker, with path autocomplete:
+## Why use it
 
-![huh file picker with autocomplete](assets/huh-picker.png)
+- **Answers appear as they are written.** You see the first line almost immediately instead of waiting for a blank screen.
+- **It is made for a terminal.** Headings, lists, code blocks, links, and tables are formatted for your window. Piped output stays as plain Markdown, and `NO_COLOR=1` turns off colors.
+- **It can look things up.** Web search is used automatically when a question needs current information.
+- **It can read your files.** Attach one or more files, or pick one interactively.
+- **It remembers the last conversation.** Use `-c` to ask a follow-up.
+- **It runs where you do.** Linux, macOS, and Windows are supported.
 
 ## Requirements
 
-- An [OpenRouter API key](https://openrouter.ai/keys)
-- A Rust toolchain (install via [rustup](https://rustup.rs)) only if building from source
+- An [OpenRouter API key](https://openrouter.ai/keys).
+- A Rust toolchain (from [rustup.rs](https://rustup.rs)) only if you build from source.
 
 ## Install
+
+The quickest way:
 
 ```sh
 curl -LsSf https://olisemeka.dev/huh/install.sh | sh
 ```
 
-The installer downloads the latest release for Linux (x86_64 or aarch64) or macOS
-(Intel or Apple silicon), verifies its SHA-256 checksum, and installs to
-`~/.local/bin/huh`. Set `HUH_INSTALL_DIR` to choose another directory, or
-`HUH_VERSION=v0.1.0` to pin a release.
+The installer downloads the right build for your computer, checks its SHA-256 checksum, and installs `huh` to `~/.local/bin/huh`. It supports Linux (x86_64, aarch64, armv7, and i686) and macOS (Intel and Apple silicon). Under Git Bash, MSYS2, or Cygwin it hands off to the PowerShell installer.
 
-Windows (PowerShell):
+Set `HUH_INSTALL_DIR` to install somewhere else, or `HUH_VERSION=v0.1.0` to pin a release.
+
+![Installing huh with the curl installer](assets/huh-install.png)
+
+### Windows
 
 ```powershell
 irm https://olisemeka.dev/huh/install.ps1 | iex
 ```
 
-The PowerShell installer installs to `%USERPROFILE%\.local\bin` and adds that directory
-to your user PATH.
-
-![Installing huh with the curl installer](assets/huh-install.png)
+The PowerShell installer picks the native x64, ARM64, or x86 build, installs to `%USERPROFILE%\.local\bin`, and adds that directory to your user PATH. Open a new terminal afterward.
 
 ### From source
 
-Build a release binary, then install it with the local script:
-
-```sh
-cargo build --release --locked
-./.install.sh
-```
-
-`./.install.sh` does not need a Rust toolchain; it only copies a prebuilt binary. It
-installs to `~/.local/bin/huh`. Override the binary with `HUH_BINARY` and the
-destination with `BIN_DIR`:
-
-```sh
-HUH_BINARY=/path/to/huh BIN_DIR="$HOME/.cargo/bin" ./.install.sh
-```
-
-Alternatively, install straight from the source tree with Cargo:
+You need a Rust toolchain. Install it from [rustup.rs](https://rustup.rs) if you do not have one.
 
 ```sh
 cargo install --path . --locked
 ```
 
-## Update
-
-If you installed with the curl script, re-run it to install the latest release:
+Or build a release binary and copy it somewhere on your PATH:
 
 ```sh
-curl -LsSf https://olisemeka.dev/huh/install.sh | sh
+cargo build --release --locked
+install -m 0755 target/release/huh ~/.local/bin/huh
 ```
 
-For source installs, `huh -u` rebuilds and reinstalls the running binary:
+## Set up your API key
 
-```sh
-huh -u
-```
-
-This requires a Rust toolchain and rebuilds from the source tree the binary was built
-from. It does not run `git pull`; do that first to pick up remote changes. The build
-happens first, so a failed build leaves the current binary untouched. If the source tree
-has moved, reinstall from the new checkout with
-`cargo build --release --locked && ./.install.sh`.
-
-## Setup
-
-Save your API key once:
+`huh` uses [OpenRouter](https://openrouter.ai) for answers, so you need an OpenRouter API key. Create one at [openrouter.ai/keys](https://openrouter.ai/keys), then save it once:
 
 ```sh
 huh --login
 ```
 
-Or provide it through the environment (this overrides the saved key):
+You can also provide the key through the environment. This overrides the saved key:
 
 ```sh
 export OPENROUTER_API_KEY="sk-..."
 ```
 
-The config lives at `${XDG_CONFIG_HOME:-$HOME/.config}/huh/config.json` and is created
-with private permissions. `--login` writes the API key there; the file can also hold a
-default model and search mode:
+The config lives at `${XDG_CONFIG_HOME:-$HOME/.config}/huh/config.json`. It can also hold a default model and search mode:
 
 ```json
 {
@@ -117,65 +81,33 @@ default model and search mode:
 }
 ```
 
-`search` accepts `auto`, `on`, or `off`. `-m`, `HUH_MODEL`, `-s`, and `-ns` override
-the matching config values. Older configs still load, and unknown fields are dropped on
-the next save.
+`search` accepts `auto`, `on`, or `off`. The `-m`, `-s`, and `-ns` flags override these values for one request. `HUH_MODEL` overrides the model for the current shell.
 
-## Usage
+## Ask a question
 
 ```sh
 huh why is the sky blue
 huh how do I create a new Git repo and push it to GitHub
 echo "explain closures in Rust" | huh
 huh -- what does -v mean
-huh -ns what does this Rust error mean
 ```
 
-Options must come before the prompt; the remaining words are joined into the question.
-Quotes are optional for ordinary words. Use them when the question contains shell
-characters such as `?`, `*`, `|`, `$`, or `(`, and use `--` when the question starts
-with `-`.
-
-Plain `huh` starts a fresh conversation and replaces the saved session. Use `-c` (or
-`--continue`) to follow up on the previous conversation:
-
-```sh
-huh explain Rust ownership
-huh -c now show a small example
-```
-
-The session lives at `${XDG_STATE_HOME:-$HOME/.local/state}/huh/session.json`. `huh -c`
-loads the stored messages, appends the new question, and saves the answer for the next
-follow-up. If no previous session exists, it warns and starts a new conversation. History
-is capped at 10 question-and-answer pairs (20 messages) and roughly 80,000 characters.
-The first pair is kept as the context anchor; the oldest middle pairs are dropped first.
-If the first and latest pairs still do not fit, the anchor is dropped too, and the latest
-pair is always kept.
-
-Web search uses [OpenRouter's web search server
-tool](https://openrouter.ai/docs/guides/features/server-tools/web-search), which adds a
-per-search fee on top of model usage. Results are cited as Markdown links.
-
-Per-request flags override the defaults:
-
-```sh
-huh -m openai/gpt-5-mini summarize this diff
-```
-
-## Examples
-
-Ask for a command when you only remember the shape of it:
-
-```sh
-huh how do I create a new Git repo and push it to GitHub
-huh git: undo the last commit but keep the changes
-huh how do I rebase onto main and resolve conflicts
-huh what is the rsync command to copy a folder but skip node_modules
-```
+Options go before the question. The remaining words are joined into one question, so quotes are optional for ordinary words. Use quotes when the question contains shell characters such as `?`, `*`, `|`, `$`, or `(`. Use `--` when the question starts with `-`.
 
 ![huh creating a Git repository and pushing it to GitHub](assets/huh-git.png)
 
-Explain code, errors, or logs without leaving the shell:
+A few more examples:
+
+```sh
+huh git: undo the last commit but keep the changes
+huh how do I rebase onto main and resolve conflicts
+huh what is the rsync command to copy a folder but skip node_modules
+huh compare Postgres and SQLite for a small local app
+```
+
+## Attach a file
+
+Point `huh` at a file with `-f`. Repeat the flag to attach more than one file:
 
 ```sh
 huh -f src/main.rs
@@ -183,80 +115,81 @@ huh -f build.log why did this build fail
 huh -f Cargo.toml -f src/main.rs review these files for problems
 ```
 
-Look something up when the answer needs to be current, or turn search off when it does
-not:
+If you leave out the path, `huh` opens an interactive picker. Type to filter, press Tab to complete, and press Enter to open a directory or select a file.
+
+```sh
+huh -f
+```
+
+![huh file picker with autocomplete](assets/huh-picker.png)
+
+After you pick a file, `huh` asks what you want to know and suggests "Explain this file." Press Enter to accept it.
+
+![huh asking for a question after picking a file](assets/huh-question.png)
+
+Only files you name explicitly are read. Each file is limited to 256 KiB and all attached files together are limited to 512 KiB. Piped input is read up to 16 MiB and cut down to the last 256 KiB, so long logs keep their final errors. Attached file contents are saved with the conversation, so `-c` can refer back to them.
+
+## Search the web
+
+Web search is on by default. `huh` decides when a question needs current information and searches only then. Force a search with `-s`, or turn it off for one request with `-ns`:
 
 ```sh
 huh -s what changed in the latest Rust release
 huh -ns difference between TCP and UDP
-huh compare Postgres and SQLite for a small local app
 ```
+
+Search results are cited as Markdown links. OpenRouter charges a small per-search fee on top of the model usage.
 
 ![huh using web search for the latest Rust release](assets/huh-search.png)
 
-Keep a thread going:
+## Continue a conversation
+
+Plain `huh` starts a fresh conversation and replaces the saved session. Use `-c` to follow up on the previous one:
 
 ```sh
 huh explain Rust ownership
 huh -c now show a small example
 ```
 
-Use a stronger model for one question:
+The session lives at `${XDG_STATE_HOME:-$HOME/.local/state}/huh/session.json`. History keeps up to 10 question-and-answer pairs (20 messages) and about 80,000 characters. The first pair is kept as the starting context; the oldest middle pairs are dropped first. If the first and latest pairs still do not fit, the first pair is dropped too, and the latest pair is always kept.
+
+## Choose a model
+
+The default model is `openai/gpt-oss-120b:nitro`. Use `-m` to pick a different model for one request:
 
 ```sh
 huh -m openai/gpt-5-mini review this architecture and list the risks
 ```
 
-## Attaching files
+## Update
 
-Named files are read and attached to the prompt. Repeat `-f` for multiple files:
-
-```sh
-huh -f src/main.rs -f Cargo.toml review these files
-```
-
-Omit the path to pick a file interactively:
+If you installed with the curl script, run it again to get the latest release:
 
 ```sh
-huh -f
+curl -LsSf https://olisemeka.dev/huh/install.sh | sh
 ```
 
-Type to filter, Tab completes, and Enter opens a directory or selects a file. After
-picking, huh asks for your question; press Enter to accept the default, "Explain this
-file." (or "Explain these files."). The same question prompt appears for
-`huh -f <path>` when no question is given. Interactive prompts need a terminal; piped
-invocations must pass a path and the question.
+If you installed from source, `huh -u` rebuilds and reinstalls the running binary. It uses the source tree the binary was built from and does not run `git pull`, so do that first. The build happens before the install, so a failed build leaves the current binary untouched.
 
-![huh asking for a question after picking a file](assets/huh-question.png)
+## Options
 
-Only files you name explicitly are read. Files are limited to 256 KiB each and 512 KiB
-total. Piped input is read up to 16 MiB and truncated to the last 256 KiB with a marker
-in the prompt, so long logs keep their final errors. Attached file contents are part of
-the saved conversation, so `-c` can refer back to them.
+| Option / command | What it does |
+| --- | --- |
+| `-c`, `--continue` | Continue the previous conversation |
+| `-f`, `--file [path]` | Attach a file; omit the path to pick one |
+| `-s`, `--search` | Force a web search |
+| `-ns`, `--no-search` | Disable web search for this request |
+| `-m`, `--model <name>` | Use a different model for this request |
+| `-u`, `--update` | Rebuild and install from source |
+| `--login` | Save your OpenRouter API key |
+| `--logout` | Remove the saved API key |
+| `--config` | Show the current configuration |
+| `-V`, `--version` | Show the version |
+| `-h`, `--help` | Show help |
 
-## Options and commands
+## Small on purpose
 
-| Option / command                   | Description                                       |
-| ---------------------------------- | ------------------------------------------------- |
-| `-c`, `--continue`                 | Continue the previous conversation                |
-| `-f`, `--file [path]`              | Attach a file; omit path to pick interactively    |
-| `-s`, `--search`                   | Force a web search                                |
-| `-ns`, `--no-search`               | Disable web search for this request               |
-| `-m`, `--model <name>`             | Model for this request                            |
-| `-u`, `--update`                   | Rebuild and install from source                   |
-| `--login`                          | Save your OpenRouter API key                      |
-| `--logout`                         | Remove the saved API key                          |
-| `--config`                         | Show configuration and defaults                   |
-| `-V`, `--version`                  | Show version                                      |
-| `-h`, `--help`                     | Show help                                         |
-
-The default model is `openai/gpt-oss-120b:nitro`. Override it for one request with `-m`
-(for example, `-m openai/gpt-5-mini` for harder reasoning), or for a shell session with
-`HUH_MODEL`.
-
-Requests use a 10s connect timeout and a 120s read timeout. Network failures, timeouts,
-429, and 5xx responses are retried up to three times (four attempts total) with
-exponential backoff; `Retry-After` is honored up to 30 seconds.
+`huh` starts instantly, uses very little memory, and keeps its state in two plain files. There is no daemon, no database, and no browser involved. It is meant to feel like another small command in your shell, not a separate app.
 
 ## Development
 
@@ -274,3 +207,9 @@ rm "${BIN_DIR:-$HOME/.local/bin}/huh"
 rm -r "${XDG_CONFIG_HOME:-$HOME/.config}/huh"
 rm -r "${XDG_STATE_HOME:-$HOME/.local/state}/huh"
 ```
+
+## Links
+
+- Source: [github.com/OliseNS/huh](https://github.com/OliseNS/huh)
+- Installer: [olisemeka.dev/huh/install.sh](https://olisemeka.dev/huh/install.sh)
+- OpenRouter: [openrouter.ai](https://openrouter.ai)
