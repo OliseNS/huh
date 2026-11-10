@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::storage::{load_or_backup, save_json, xdg_path};
 use crate::util::{env_value, non_empty, read_secret};
 
-pub(crate) const DEFAULT_MODEL: &str = "deepseek/deepseek-v4.1-flash-1017:nitro";
+pub(crate) const DEFAULT_MODEL: &str = "openai/gpt-oss-120b:nitro";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

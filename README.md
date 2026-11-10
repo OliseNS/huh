@@ -111,7 +111,7 @@ default model and search mode:
 ```json
 {
   "api_key": "sk-...",
-  "model": "deepseek/deepseek-v4.1-flash-1017:nitro",
+  "model": "openai/gpt-oss-120b:nitro",
   "search": "auto"
 }
 ```
@@ -249,9 +249,9 @@ the saved conversation, so `-c` can refer back to them.
 | `-V`, `--version`                  | Show version                                      |
 | `-h`, `--help`                     | Show help                                         |
 
-The default model is `deepseek/deepseek-v4.1-flash-1017:nitro`, chosen for cheap, fast
-answers. Override it for one request with `-m` (for example,
-`-m openai/gpt-5-mini` for harder reasoning), or for a shell session with `HUH_MODEL`.
+The default model is `openai/gpt-oss-120b:nitro`. Override it for one request with `-m`
+(for example, `-m openai/gpt-5-mini` for harder reasoning), or for a shell session with
+`HUH_MODEL`.
 
 Requests use a 10s connect timeout and a 120s read timeout. Network failures, timeouts,
 429, and 5xx responses are retried up to three times (four attempts total) with
