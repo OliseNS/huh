@@ -156,7 +156,7 @@ the saved conversation, so `-c` can refer back to them.
 | `-s`, `--search`                   | Force a web search                                |
 | `-ns`, `--no-search`               | Disable web search for this request               |
 | `-m`, `--model <name>`             | Model for this request                            |
-| `-u`, `--update`                   | Rebuild and reinstall from source                 |
+| `-u`, `--update`                   | Rebuild and install                               |
 | `--login`                          | Save your OpenRouter API key                      |
 | `--logout`                         | Remove the saved API key                          |
 | `--config`                         | Show configuration and defaults                   |

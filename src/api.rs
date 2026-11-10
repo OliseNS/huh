@@ -7,6 +7,7 @@ use crate::config::SearchMode;
 use crate::session::Message;
 
 pub(crate) const BASE_URL: &str = "https://openrouter.ai/api/v1";
+pub(crate) type ChatResponse = ureq::http::Response<ureq::Body>;
 
 macro_rules! system_prompt {
     ($intro:literal) => {
@@ -127,12 +128,17 @@ pub(crate) fn parse_stream_line(line: &str) -> Result<StreamUpdate, String> {
     })
 }
 
-pub(crate) fn client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .read_timeout(READ_TIMEOUT)
-        .build()
-        .map_err(|error| format!("failed to create HTTP client: {error}"))
+pub(crate) fn agent() -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_resolve(Some(CONNECT_TIMEOUT))
+        .timeout_connect(Some(CONNECT_TIMEOUT))
+        .timeout_send_request(Some(RESPONSE_TIMEOUT))
+        .timeout_send_body(Some(RESPONSE_TIMEOUT))
+        .timeout_recv_response(Some(RESPONSE_TIMEOUT))
+        .timeout_per_read(Some(READ_TIMEOUT))
+        .build();
+    ureq::Agent::new_with_config(config)
 }
 
 fn truncate(text: &str, limit: usize) -> String {
@@ -144,23 +150,39 @@ fn truncate(text: &str, limit: usize) -> String {
     truncated
 }
 
-pub(crate) async fn post_chat(
-    client: &reqwest::Client,
+pub(crate) fn post_chat(
+    agent: &ureq::Agent,
     api_key: &str,
     body: &serde_json::Value,
-) -> Result<reqwest::Response, String> {
+) -> Result<ChatResponse, String> {
+    post_chat_at(
+        agent,
+        &format!("{BASE_URL}/chat/completions"),
+        api_key,
+        body,
+    )
+}
+
+fn post_chat_at(
+    agent: &ureq::Agent,
+    url: &str,
+    api_key: &str,
+    body: &serde_json::Value,
+) -> Result<ChatResponse, String> {
+    let body =
+        serde_json::to_vec(body).map_err(|error| format!("failed to encode request: {error}"))?;
     let mut delay = Duration::from_millis(500);
     let mut last_error = String::new();
 
     for attempt in 1..=MAX_ATTEMPTS {
-        let request = client
-            .post(format!("{BASE_URL}/chat/completions"))
-            .bearer_auth(api_key)
-            .json(body)
-            .send();
+        let request = agent
+            .post(url)
+            .header("Authorization", format!("Bearer {api_key}"))
+            .header("Content-Type", "application/json")
+            .send(body.as_slice());
 
-        match tokio::time::timeout(RESPONSE_TIMEOUT, request).await {
-            Ok(Ok(response)) => {
+        match request {
+            Ok(mut response) => {
                 let status = response.status();
                 if status.is_success() {
                     return Ok(response);
@@ -168,40 +190,48 @@ pub(crate) async fn post_chat(
 
                 let retry_after = response
                     .headers()
-                    .get(reqwest::header::RETRY_AFTER)
+                    .get(ureq::http::header::RETRY_AFTER)
                     .and_then(|value| value.to_str().ok())
                     .and_then(|value| value.trim().parse::<u64>().ok());
-                let text = response.text().await.unwrap_or_default();
+                let text = response
+                    .body_mut()
+                    .with_config()
+                    .limit(64 * 1024)
+                    .read_to_string()
+                    .unwrap_or_default();
                 last_error = format!("HTTP {status}: {}", truncate(text.trim(), 500));
 
-                let retryable =
-                    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
-                if !retryable || attempt == MAX_ATTEMPTS {
+                if !retryable_status(status) || attempt == MAX_ATTEMPTS {
                     return Err(last_error);
                 }
                 if let Some(seconds) = retry_after {
-                    delay = Duration::from_secs(seconds.min(30)).max(Duration::from_millis(500));
+                    delay = retry_after_delay(seconds);
                 }
             }
-            Ok(Err(error)) => {
-                last_error = format!("request failed: {error}");
-                if attempt == MAX_ATTEMPTS {
-                    return Err(last_error);
-                }
-            }
-            Err(_) => {
-                last_error = format!("request timed out after {}s", RESPONSE_TIMEOUT.as_secs());
+            Err(error) => {
+                last_error = match error {
+                    ureq::Error::Timeout(_) => "request timed out".to_string(),
+                    error => format!("request failed: {error}"),
+                };
                 if attempt == MAX_ATTEMPTS {
                     return Err(last_error);
                 }
             }
         }
 
-        tokio::time::sleep(delay).await;
+        std::thread::sleep(delay);
         delay = (delay * 2).min(Duration::from_secs(8));
     }
 
     Err(last_error)
+}
+
+fn retryable_status(status: ureq::http::StatusCode) -> bool {
+    status == ureq::http::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+fn retry_after_delay(seconds: u64) -> Duration {
+    Duration::from_secs(seconds.min(30)).max(Duration::from_millis(500))
 }
 
 pub(crate) fn build_body(
@@ -244,7 +274,68 @@ pub(crate) fn build_body(
 
 #[cfg(test)]
 mod tests {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::thread;
+
     use super::*;
+
+    fn read_request(stream: &mut TcpStream) {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut length = 0usize;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            if line == "\r\n" || line.is_empty() {
+                break;
+            }
+            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = value.trim().parse().unwrap_or(0);
+            }
+        }
+        if length > 0 {
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+        }
+    }
+
+    fn serve(statuses: &[u16]) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let statuses = statuses.to_vec();
+        let handle = thread::spawn(move || {
+            for status in statuses {
+                let (mut stream, _) = listener.accept().unwrap();
+                read_request(&mut stream);
+                let (reason, body) = match status {
+                    200 => ("OK", ""),
+                    401 => ("Unauthorized", "bad key"),
+                    500 => ("Internal Server Error", "boom"),
+                    _ => ("Error", "error"),
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+                stream.flush().unwrap();
+            }
+        });
+        (format!("http://{address}/chat"), handle)
+    }
+
+    fn test_agent() -> ureq::Agent {
+        let config = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .proxy(None)
+            .build();
+        ureq::Agent::new_with_config(config)
+    }
 
     fn ask_body(search: SearchMode) -> serde_json::Value {
         build_body("vendor/model", &[Message::user("hi")], search)
@@ -364,5 +455,34 @@ mod tests {
             panic!("expected delta");
         };
         assert_eq!(tokens, None);
+    }
+
+    #[test]
+    fn retry_helpers_match_policy() {
+        assert!(retryable_status(ureq::http::StatusCode::TOO_MANY_REQUESTS));
+        assert!(retryable_status(ureq::http::StatusCode::BAD_GATEWAY));
+        assert!(!retryable_status(ureq::http::StatusCode::UNAUTHORIZED));
+        assert_eq!(retry_after_delay(0), Duration::from_millis(500));
+        assert_eq!(retry_after_delay(5), Duration::from_secs(5));
+        assert_eq!(retry_after_delay(60), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn retries_server_errors_then_succeeds() {
+        let (url, server) = serve(&[500, 200]);
+        let response =
+            post_chat_at(&test_agent(), &url, "sk-test", &json!({"model": "x"})).unwrap();
+        assert_eq!(response.status(), 200);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn returns_client_errors_without_retrying() {
+        let (url, server) = serve(&[401]);
+        let error =
+            post_chat_at(&test_agent(), &url, "sk-test", &json!({"model": "x"})).unwrap_err();
+        assert!(error.contains("HTTP 401"));
+        assert!(error.contains("bad key"));
+        server.join().unwrap();
     }
 }

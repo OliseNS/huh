@@ -6,43 +6,31 @@ use crate::util::non_empty;
 pub(crate) fn help() -> String {
     format!(
         "\
-huh - ask an LLM from your terminal (OpenRouter)
+huh - ask an LLM from your terminal
 
-USAGE:
-  huh [OPTIONS] <prompt>       Ask a question
-  echo <prompt> | huh          Ask a question from stdin
-  huh -- <prompt>              Ask a prompt that starts with -
+USAGE
+  huh [options] <question>
+  echo <question> | huh
+  huh -- <question>             ask a question starting with -
 
-Options must come before the prompt; everything after the first prompt word is text.
+OPTIONS
+  -c, --continue                continue the previous conversation
+  -f, --file [path]             attach a file; omit path to pick one
+  -m, --model <name>            model for this request
+  -s, --search                  force web search
+  -ns, --no-search              disable web search
 
-CONVERSATION:
-  -c, --continue                  Continue the previous conversation
+COMMANDS
+  --login                       save your OpenRouter API key
+  --logout                      remove the saved key
+  --config                      show configuration
+  -u, --update                  rebuild and install
+  -V, --version
+  -h, --help
 
-ATTACHMENTS:
-  -f, --file [path]               Attach a file; omit path to pick interactively
-
-WEB SEARCH:
-  -s, --search                    Force a web search
-  -ns, --no-search                Disable web search for this request
-
-OPTIONS:
-  -m, --model <name>              Model for this request
-  -V, --version                   Show version
-  -h, --help                      Show this help
-
-COMMANDS:
-  -u, --update                    Rebuild and reinstall from source
-  --login                         Save your OpenRouter API key
-  --logout                        Remove the saved API key
-  --config                        Show configuration and defaults
-
-DEFAULT MODEL:
-  {DEFAULT_MODEL} (override with -m)
-
-ENVIRONMENT:
-  OPENROUTER_API_KEY           Overrides the saved API key
-  HUH_MODEL                    Default model (overridden by -m)
-  NO_COLOR                     Disable colored output
+Options come before the question.
+Default model: {DEFAULT_MODEL}
+Env: OPENROUTER_API_KEY, HUH_MODEL, NO_COLOR
 "
     )
 }
@@ -231,5 +219,34 @@ mod tests {
             .map(|value| value.to_string())
             .collect();
         assert!(Options::parse(&empty_file).is_err());
+    }
+
+    #[test]
+    fn help_lists_every_public_flag() {
+        let help = help();
+        for flag in [
+            "-c",
+            "--continue",
+            "-f",
+            "--file",
+            "-m",
+            "--model",
+            "-s",
+            "--search",
+            "-ns",
+            "--no-search",
+            "--login",
+            "--logout",
+            "--config",
+            "-u",
+            "--update",
+            "-V",
+            "--version",
+            "-h",
+            "--help",
+        ] {
+            assert!(help.contains(flag), "help is missing {flag}");
+        }
+        assert!(help.len() < 1400);
     }
 }

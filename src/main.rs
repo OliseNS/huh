@@ -19,7 +19,7 @@ use cli::Options;
 use config::Config;
 use session::Message;
 
-async fn dispatch() -> Result<ExitCode, String> {
+fn dispatch() -> Result<ExitCode, String> {
     let mut args = env::args();
     let program = args.next().unwrap_or_else(|| "huh".to_string());
     let args: Vec<String> = args.collect();
@@ -72,7 +72,7 @@ async fn dispatch() -> Result<ExitCode, String> {
         return Ok(ExitCode::FAILURE);
     }
 
-    run_request(options, prompt).await?;
+    run_request(options, prompt)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -88,7 +88,7 @@ fn build_prompt(options: &Options) -> Result<String, String> {
     Ok(context::compose_question(question.as_deref(), &files))
 }
 
-async fn run_request(options: Options, prompt: String) -> Result<(), String> {
+fn run_request(options: Options, prompt: String) -> Result<(), String> {
     let config = match Config::load() {
         Ok(config) => config,
         Err(error) => {
@@ -115,11 +115,11 @@ async fn run_request(options: Options, prompt: String) -> Result<(), String> {
 
     let body = api::build_body(&model, &history, search);
 
-    let client = api::client()?;
+    let agent = api::agent();
     let spinner = output::Spinner::start();
     let started = Instant::now();
-    let response = api::post_chat(&client, &api_key, &body).await?;
-    let answer = output::stream_answer(response, spinner, started).await?;
+    let response = api::post_chat(&agent, &api_key, &body)?;
+    let answer = output::stream_answer(response, spinner, started)?;
     if answer.trim().is_empty() {
         return Err("model returned no answer content".to_string());
     }
@@ -132,9 +132,8 @@ async fn run_request(options: Options, prompt: String) -> Result<(), String> {
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
-    match dispatch().await {
+fn main() -> ExitCode {
+    match dispatch() {
         Ok(code) => code,
         Err(error) => {
             eprintln!("ERROR: {}", render::sanitize(&error));

@@ -1,12 +1,10 @@
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use futures_util::StreamExt;
-
-use crate::api::{StreamUpdate, parse_stream_line};
+use crate::api::{ChatResponse, StreamUpdate, parse_stream_line};
 use crate::render::{DIM, GREEN, RESET, Renderer, color_allowed};
 
 const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -78,54 +76,54 @@ impl Drop for Spinner {
     }
 }
 
-pub(crate) async fn stream_answer(
-    response: reqwest::Response,
+pub(crate) fn stream_answer(
+    response: ChatResponse,
     spinner: Spinner,
     request_start: Instant,
 ) -> Result<String, String> {
     let stdout = io::stdout();
     let mut out = stdout.lock();
-    let mut state = StreamState::new(Renderer::stdout());
+    stream_response(
+        response,
+        spinner,
+        request_start,
+        Renderer::stdout(),
+        &mut out,
+    )
+}
+
+fn stream_response(
+    response: ChatResponse,
+    spinner: Spinner,
+    request_start: Instant,
+    renderer: Renderer,
+    out: &mut impl Write,
+) -> Result<String, String> {
+    let mut state = StreamState::new(renderer);
     state.spinner = spinner;
-    let mut stream = response.bytes_stream();
-    let mut pending: Vec<u8> = Vec::new();
+    let mut reader = BufReader::new(response.into_body().into_reader());
+    let mut line = Vec::new();
     let mut failure = None;
 
-    'stream: while let Some(chunk) = stream.next().await {
-        let chunk = match chunk {
-            Ok(chunk) => chunk,
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                if let Err(error) = state.handle_line(&String::from_utf8_lossy(&line), out) {
+                    failure = Some(error);
+                    break;
+                }
+            }
             Err(error) => {
                 failure = Some(format!("stream failed: {error}"));
                 break;
             }
-        };
-        pending.extend_from_slice(&chunk);
-
-        let mut start = 0;
-        while let Some(offset) = pending[start..].iter().position(|&byte| byte == b'\n') {
-            let end = start + offset;
-            if let Err(error) =
-                state.handle_line(&String::from_utf8_lossy(&pending[start..end]), &mut out)
-            {
-                failure = Some(error);
-                break 'stream;
-            }
-            start = end + 1;
         }
-        if start > 0 {
-            pending.drain(..start);
-        }
-    }
-
-    if failure.is_none()
-        && !pending.is_empty()
-        && let Err(error) = state.handle_line(&String::from_utf8_lossy(&pending), &mut out)
-    {
-        failure = Some(error);
     }
 
     let elapsed = request_start.elapsed();
-    let finish = state.finish(&mut out);
+    let finish = state.finish(out);
     if let Some(error) = failure {
         return Err(error);
     }
@@ -289,5 +287,33 @@ mod tests {
             Some("tps: 50.0 (estimated)")
         );
         assert_eq!(tps_message(100.0, Duration::ZERO, false), None);
+    }
+
+    fn response(data: &str) -> ChatResponse {
+        let body = ureq::Body::builder().data(data.as_bytes().to_vec());
+        ureq::http::Response::builder()
+            .status(200)
+            .body(body)
+            .unwrap()
+    }
+
+    #[test]
+    fn streams_complete_and_trailing_lines() {
+        let payload = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hello \"}}]}\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"world\"}}]}\n",
+            "data: [DONE]"
+        );
+        let mut out = Vec::new();
+        let answer = stream_response(
+            response(payload),
+            Spinner::inactive(),
+            Instant::now(),
+            Renderer::plain(),
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(answer, "hello world");
+        assert_eq!(String::from_utf8(out).unwrap(), "hello world\n");
     }
 }
