@@ -26,6 +26,12 @@ jobs:
           - os: ubuntu-latest
             target: aarch64-unknown-linux-musl
             cross: true
+          - os: ubuntu-latest
+            target: armv7-unknown-linux-musleabihf
+            cross: true
+          - os: ubuntu-latest
+            target: i686-unknown-linux-musl
+            cross: true
           - os: macos-15-intel
             target: x86_64-apple-darwin
             cross: false
@@ -34,6 +40,12 @@ jobs:
             cross: false
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            cross: false
+          - os: windows-latest
+            target: i686-pc-windows-msvc
+            cross: false
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
             cross: false
 
     steps:
@@ -45,6 +57,20 @@ jobs:
 
       - uses: taiki-e/install-action@cross
         if: matrix.cross
+
+      - name: Ensure clang is on PATH (Windows ARM64)
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          if (Get-Command clang -ErrorAction SilentlyContinue) { exit 0 }
+          $candidates = @(
+            "C:\Program Files\LLVM\bin",
+            "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\Llvm\ARM64\bin",
+            "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\Llvm\x64\bin"
+          )
+          $found = $candidates | Where-Object { Test-Path (Join-Path $_ "clang.exe") } | Select-Object -First 1
+          if (-not $found) { throw "clang.exe not found; ring needs it for aarch64-pc-windows-msvc" }
+          $found | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Build
         shell: bash
