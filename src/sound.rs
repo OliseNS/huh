@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread::{self, JoinHandle};
 
-const HUH_WAV: &[u8] = include_bytes!("../assets/huh.wav");
+const HUH_AUDIO: &[u8] = include_bytes!("../assets/huh.mp3");
 
 const SOUND_SCRIPT: &str = "\
 file=$1
@@ -13,12 +13,14 @@ if command -v paplay >/dev/null 2>&1; then
     paplay \"$file\"
 elif command -v pw-play >/dev/null 2>&1; then
     pw-play \"$file\"
-elif command -v aplay >/dev/null 2>&1; then
-    aplay -q \"$file\"
 elif command -v ffplay >/dev/null 2>&1; then
     ffplay -nodisp -autoexit -loglevel quiet \"$file\"
 elif command -v mpv >/dev/null 2>&1; then
     mpv --no-video --really-quiet \"$file\"
+elif command -v gst-play-1.0 >/dev/null 2>&1; then
+    gst-play-1.0 -q \"$file\"
+elif command -v cvlc >/dev/null 2>&1; then
+    cvlc --play-and-exit --intf dummy \"$file\"
 elif command -v afplay >/dev/null 2>&1; then
     afplay \"$file\"
 fi
@@ -60,10 +62,10 @@ fn play_file() -> Result<(), String> {
 fn write_sound_file() -> Result<PathBuf, String> {
     let dir = env::temp_dir();
     for attempt in 0..10 {
-        let path = dir.join(format!("huh-{}-{attempt}.wav", std::process::id()));
+        let path = dir.join(format!("huh-{}-{attempt}.mp3", std::process::id()));
         match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(mut file) => {
-                file.write_all(HUH_WAV)
+                file.write_all(HUH_AUDIO)
                     .map_err(|error| format!("failed to write sound: {error}"))?;
                 return Ok(path);
             }
@@ -79,9 +81,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bundles_a_wav_file() {
-        assert!(HUH_WAV.starts_with(b"RIFF"));
-        assert!(HUH_WAV.len() > 1000);
+    fn bundles_an_mp3_file() {
+        assert!(HUH_AUDIO.len() > 1000);
+        assert_eq!(HUH_AUDIO[0], 0xFF);
+        assert_eq!(HUH_AUDIO[1] & 0xE0, 0xE0);
     }
 
     #[test]

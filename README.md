@@ -141,7 +141,7 @@ Only files you name explicitly are read.
 
 ## Sound
 
-The bundled sound plays when the first answer token arrives, only when stdout is a
+The bundled MP3 plays when the first answer token arrives, only when stdout is a
 terminal. `-q` (or `--no-sound`) mutes one request. Save the setting permanently with:
 
 ```sh
