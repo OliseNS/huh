@@ -2,6 +2,7 @@ use std::env;
 use std::io::{self, IsTerminal, Read};
 
 const STDIN_LIMIT_BYTES: usize = 256 * 1024;
+const STDIN_READ_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
 const SECRET_LIMIT_BYTES: u64 = 4096;
 
 pub(crate) fn non_empty(value: &str) -> Option<&str> {
@@ -19,6 +20,8 @@ pub(crate) fn read_prompt_stdin() -> Result<String, String> {
     let mut bytes = Vec::new();
     let mut chunk = [0u8; 16 * 1024];
     let mut stdin = io::stdin().lock();
+    let mut total = 0u64;
+    let mut dropped = false;
 
     loop {
         let read = stdin
@@ -27,15 +30,21 @@ pub(crate) fn read_prompt_stdin() -> Result<String, String> {
         if read == 0 {
             break;
         }
+        total += read as u64;
         bytes.extend_from_slice(&chunk[..read]);
         if bytes.len() > STDIN_LIMIT_BYTES * 2 {
             let excess = bytes.len() - STDIN_LIMIT_BYTES;
             bytes.drain(..excess);
+            dropped = true;
+        }
+        if total >= STDIN_READ_LIMIT_BYTES {
+            dropped = true;
+            break;
         }
     }
 
     let (text, truncated) = tail_lossy(&bytes, STDIN_LIMIT_BYTES);
-    if truncated && !text.is_empty() {
+    if (dropped || truncated) && !text.is_empty() {
         eprintln!("warning: stdin truncated to the last {STDIN_LIMIT_BYTES} bytes");
         return Ok(format!(
             "[input truncated: showing the last {STDIN_LIMIT_BYTES} bytes]\n{text}"

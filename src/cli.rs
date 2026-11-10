@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::config::DEFAULT_MODEL;
+use crate::config::{DEFAULT_MODEL, SearchMode};
 use crate::util::non_empty;
 
 pub(crate) fn help() -> String {
@@ -18,8 +18,7 @@ Options must come before the prompt; everything after the first prompt word is t
 CONVERSATION:
   -c, --continue                  Continue the previous conversation
 
-DEBUGGING:
-  -y, --why                       Explain a command failure (use with huh-why)
+ATTACHMENTS:
   -f, --file <path>               Attach a file to the prompt (repeatable)
 
 WEB SEARCH:
@@ -44,26 +43,15 @@ ENVIRONMENT:
   OPENROUTER_API_KEY           Overrides the saved API key
   HUH_MODEL                    Default model (overridden by -m)
   NO_COLOR                     Disable colored output
-  HUH_LAST_COMMAND             Previous command for --why (set by huh-why)
-  HUH_LAST_EXIT_CODE           Previous exit code for --why (set by huh-why)
 "
     )
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum SearchMode {
-    #[default]
-    Auto,
-    Force,
-    Disabled,
 }
 
 #[derive(Default)]
 pub(crate) struct Options {
     pub(crate) model: Option<String>,
-    pub(crate) search: SearchMode,
+    pub(crate) search: Option<SearchMode>,
     pub(crate) continue_session: bool,
-    pub(crate) why: bool,
     pub(crate) files: Vec<PathBuf>,
     pub(crate) prompt: Vec<String>,
 }
@@ -101,10 +89,9 @@ impl Options {
                         }
                         options.files.push(PathBuf::from(value));
                     }
-                    "-s" | "--search" => options.search = SearchMode::Force,
-                    "-ns" | "--no-search" => options.search = SearchMode::Disabled,
+                    "-s" | "--search" => options.search = Some(SearchMode::On),
+                    "-ns" | "--no-search" => options.search = Some(SearchMode::Off),
                     "-c" | "--continue" => options.continue_session = true,
-                    "-y" | "--why" => options.why = true,
                     option if option.starts_with('-') && option != "-" => {
                         return Err(format!(
                             "unknown option: {option}\nRun `huh --help` for usage."
@@ -153,7 +140,6 @@ mod tests {
             "-m",
             "vendor/model",
             "-s",
-            "-y",
             "-c",
             "-f",
             "a.rs",
@@ -163,8 +149,7 @@ mod tests {
             "world",
         ]);
         assert_eq!(short.model.as_deref(), Some("vendor/model"));
-        assert_eq!(short.search, SearchMode::Force);
-        assert!(short.why);
+        assert_eq!(short.search, Some(SearchMode::On));
         assert!(short.continue_session);
         assert_eq!(
             short.files,
@@ -178,25 +163,23 @@ mod tests {
             "--search",
             "--no-search",
             "--continue",
-            "--why",
             "--file",
             "a.rs",
             "hi",
         ]);
         assert_eq!(long.model.as_deref(), Some("vendor/model"));
-        assert_eq!(long.search, SearchMode::Disabled);
+        assert_eq!(long.search, Some(SearchMode::Off));
         assert!(long.continue_session);
-        assert!(long.why);
         assert_eq!(long.files, vec![PathBuf::from("a.rs")]);
         assert_eq!(long.prompt.join(" "), "hi");
     }
 
     #[test]
     fn no_search_short_flag_wins() {
-        assert_eq!(parse(&["-s", "-ns", "hello"]).search, SearchMode::Disabled);
+        assert_eq!(parse(&["-s", "-ns", "hello"]).search, Some(SearchMode::Off));
         assert_eq!(
             parse(&["-ns", "--search", "hello"]).search,
-            SearchMode::Force
+            Some(SearchMode::On)
         );
     }
 
@@ -205,9 +188,8 @@ mod tests {
         let options = parse(&["--", "-m", "not-a-flag"]);
         assert_eq!(options.model, None);
         assert_eq!(options.prompt.join(" "), "-m not-a-flag");
-        assert_eq!(options.search, SearchMode::Auto);
+        assert_eq!(options.search, None);
         assert!(!options.continue_session);
-        assert!(!options.why);
         assert!(options.files.is_empty());
 
         let mid_prompt = parse(&["-c", "is", "-m", "main?"]);
@@ -221,7 +203,7 @@ mod tests {
         let unknown = vec!["--nope".to_string()];
         assert!(Options::parse(&unknown).is_err());
 
-        let flag_file: Vec<String> = ["--file", "--why", "hi"]
+        let flag_file: Vec<String> = ["--file", "--search", "hi"]
             .iter()
             .map(|value| value.to_string())
             .collect();

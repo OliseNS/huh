@@ -4,10 +4,10 @@ Ask a question from your terminal and get a short, streaming answer. `huh` talks
 [OpenRouter](https://openrouter.ai) using the OpenAI-compatible chat completions API.
 
 Answers stream as they arrive. When stdout is a terminal, Markdown is rendered with
-styled headings, lists, code blocks, links, and inline code; piped output stays raw
-Markdown. Set `NO_COLOR=1` to disable colors. While waiting for the first token, a
-spinner is shown on stderr when it is a terminal, and end-to-end token throughput is
-reported there too when stderr is a terminal.
+colored headings, lists, code blocks, links, inline code, and aligned tables; piped
+output stays raw Markdown. Set `NO_COLOR=1` to disable colors. While waiting for the
+first visible output, a spinner is shown on stderr when it is a terminal, and end-to-end
+token throughput is reported there too when stderr is a terminal.
 
 Web search is on by default: the model decides when a question needs current
 information and searches only then. `-s` forces a search; `-ns` disables it.
@@ -69,8 +69,20 @@ export OPENROUTER_API_KEY="sk-..."
 ```
 
 The config lives at `${XDG_CONFIG_HOME:-$HOME/.config}/huh/config.json` and is created
-with private permissions. It stores only the API key; use `-m` to override the model
-for a request. Older configs still load, and unused fields are dropped on the next save.
+with private permissions. `--login` writes the API key there; the file can also hold a
+default model and search mode:
+
+```json
+{
+  "api_key": "sk-...",
+  "model": "deepseek/deepseek-v4.1-flash-1017:nitro",
+  "search": "auto"
+}
+```
+
+`search` accepts `auto`, `on`, or `off`. `-m`, `HUH_MODEL`, `-s`, and `-ns` override
+the matching config values. Older configs still load, and unknown fields are dropped on
+the next save.
 
 ## Usage
 
@@ -110,60 +122,24 @@ Per-request flags override the defaults:
 huh -m openai/gpt-5-mini "summarize this diff"
 ```
 
-## Debugging a failed command
-
-Add this function to your shell startup file (for example `~/.bashrc`). It is not
-installed automatically:
-
-```bash
-huh-why() {
-    local status=$?
-    local command
-    command=$(fc -ln -1)
-    HUH_LAST_COMMAND="$command" HUH_LAST_EXIT_CODE="$status" huh -y "$@"
-}
-```
-
-Then run `huh-why` after a command fails, optionally with a follow-up question:
-
-```sh
-huh-why
-huh-why "why did the linker fail?"
-```
-
-Piping command output works too:
-
-```sh
-cargo build 2>&1 | huh -y
-```
-
-`-y` sends the previous command, its exit code, piped output, your extra words, and any
-`--file` attachments. It does not read files, glob, or search on its own. Without a
-command, piped output, or file it exits with an error instead of calling the API. Web
-search is off for `-y` unless you pass `-s`. Debugging uses the same model as normal
-requests; override it for one request with `-m`. `-y` cannot be combined with `-c`, and
-debugging requests are not saved to the conversation session.
-
 ## Attaching files
 
 Named files are read and attached to the prompt. Repeat `-f` for multiple files:
 
 ```sh
 huh -f src/main.rs -f Cargo.toml "review these files"
-huh -y -f build.log "what went wrong?"
 ```
 
 Only files you name explicitly are read. Files are limited to 256 KiB each and 512 KiB
-total. Piped input is truncated to the last 256 KiB with a marker in the prompt, so long
-logs keep their final errors. Attached file contents are part of the saved conversation,
-so `-c` can refer back to them.
+total. Piped input is read up to 16 MiB and truncated to the last 256 KiB with a marker
+in the prompt, so long logs keep their final errors. Attached file contents are part of
+the saved conversation, so `-c` can refer back to them.
 
 ## Options and commands
 
 | Option / command                   | Description                              |
 | ---------------------------------- | ---------------------------------------- |
 | `-c`, `--continue`                 | Continue the previous conversation       |
-| `-y`, `--why`                      | Explain a command failure                |
 | `-f`, `--file <path>`              | Attach a file to the prompt (repeatable) |
 | `-s`, `--search`                   | Force a web search                       |
 | `-ns`, `--no-search`               | Disable web search for this request      |

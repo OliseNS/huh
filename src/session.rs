@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::storage::{LoadError, backup_invalid, load_json, save_json, xdg_path};
+use crate::storage::{backup_invalid, load_or_backup, save_json, xdg_path};
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Message {
@@ -67,21 +67,15 @@ fn valid_history(messages: &[Message]) -> bool {
 
 pub(crate) fn load_session() -> Result<Vec<Message>, String> {
     let path = state_path()?;
-    match load_json::<Vec<Message>>(&path) {
-        Ok(Some(messages)) if valid_history(&messages) => Ok(messages),
-        Ok(Some(_)) => {
-            eprintln!("warning: ignoring invalid session at {}", path.display());
-            backup_invalid(&path);
-            Ok(Vec::new())
-        }
-        Ok(None) => Ok(Vec::new()),
-        Err(LoadError::Parse(error)) => {
-            eprintln!("warning: ignoring invalid session ({error})");
-            backup_invalid(&path);
-            Ok(Vec::new())
-        }
-        Err(LoadError::Read(error)) => Err(error),
+    let Some(messages) = load_or_backup::<Vec<Message>>(&path, "session")? else {
+        return Ok(Vec::new());
+    };
+    if valid_history(&messages) {
+        return Ok(messages);
     }
+    eprintln!("warning: ignoring invalid session at {}", path.display());
+    backup_invalid(&path);
+    Ok(Vec::new())
 }
 
 pub(crate) fn save_session(messages: &[Message]) -> Result<(), String> {

@@ -34,6 +34,21 @@ pub(crate) fn load_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, L
     }
 }
 
+pub(crate) fn load_or_backup<T: DeserializeOwned>(
+    path: &Path,
+    label: &str,
+) -> Result<Option<T>, String> {
+    match load_json(path) {
+        Ok(value) => Ok(value),
+        Err(LoadError::Parse(error)) => {
+            eprintln!("warning: ignoring invalid {label} ({error})");
+            backup_invalid(path);
+            Ok(None)
+        }
+        Err(LoadError::Read(error)) => Err(error),
+    }
+}
+
 pub(crate) fn save_json<T: Serialize + ?Sized>(
     path: &Path,
     value: &T,
@@ -56,21 +71,31 @@ pub(crate) fn save_json<T: Serialize + ?Sized>(
         .unwrap_or_default()
         .as_nanos();
     let temp = path.with_file_name(format!("{file_name}.{}.{nanos}.tmp", std::process::id()));
-    write_private(&temp, contents.as_bytes())?;
-    fs::rename(&temp, path).map_err(|error| format!("failed to save {}: {error}", path.display()))
+    if let Err(error) = write_private(&temp, contents.as_bytes()) {
+        let _ = fs::remove_file(&temp);
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(&temp, path) {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("failed to save {}: {error}", path.display()));
+    }
+    Ok(())
+}
+
+fn absolute_env(name: &str) -> Option<PathBuf> {
+    env::var_os(name)
+        .filter(|value| !value.is_empty() && Path::new(value).is_absolute())
+        .map(PathBuf::from)
 }
 
 pub(crate) fn xdg_path(env_var: &str, fallback: &[&str], file: &str) -> Result<PathBuf, String> {
-    if let Some(base) =
-        env::var_os(env_var).filter(|value| !value.is_empty() && Path::new(value).is_absolute())
-    {
-        return Ok(PathBuf::from(base).join("huh").join(file));
+    if let Some(base) = absolute_env(env_var) {
+        return Ok(base.join("huh").join(file));
     }
 
-    let home = env::var_os("HOME")
-        .filter(|value| !value.is_empty() && Path::new(value).is_absolute())
-        .ok_or_else(|| "HOME is not set to an absolute path".to_string())?;
-    let mut path = PathBuf::from(home);
+    let home =
+        absolute_env("HOME").ok_or_else(|| "HOME is not set to an absolute path".to_string())?;
+    let mut path = home;
     path.extend(fallback);
     Ok(path.join("huh").join(file))
 }

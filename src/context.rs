@@ -2,7 +2,7 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::util::{env_value, non_empty};
+use crate::util::non_empty;
 
 const FILE_LIMIT_BYTES: u64 = 256 * 1024;
 const TOTAL_LIMIT_BYTES: u64 = 512 * 1024;
@@ -78,29 +78,6 @@ fn file_too_large(path: &Path, size: u64) -> String {
     )
 }
 
-#[derive(Default)]
-pub(crate) struct WhyContext {
-    pub(crate) command: Option<String>,
-    pub(crate) exit_code: Option<String>,
-    pub(crate) output: Option<String>,
-}
-
-impl WhyContext {
-    pub(crate) fn from_env() -> Self {
-        Self {
-            command: env_value("HUH_LAST_COMMAND"),
-            exit_code: env_value("HUH_LAST_EXIT_CODE"),
-            output: None,
-        }
-    }
-
-    pub(crate) fn has_context(&self, files: &[FileContext]) -> bool {
-        self.command.is_some()
-            || self.output.as_deref().and_then(non_empty).is_some()
-            || !files.is_empty()
-    }
-}
-
 pub(crate) fn compose_question(question: Option<&str>, files: &[FileContext]) -> String {
     let mut sections = Vec::new();
     if let Some(question) = question.and_then(non_empty) {
@@ -110,43 +87,29 @@ pub(crate) fn compose_question(question: Option<&str>, files: &[FileContext]) ->
     sections.join("\n\n")
 }
 
-pub(crate) fn compose_why(
-    context: &WhyContext,
-    question: Option<&str>,
-    files: &[FileContext],
-) -> String {
-    let mut sections = Vec::new();
-    if let Some(command) = context.command.as_deref().and_then(non_empty) {
-        sections.push(fenced_block("Command:", Some("sh"), command.trim()));
-    }
-    if let Some(exit_code) = context.exit_code.as_deref().and_then(non_empty) {
-        sections.push(format!("Exit code: {}", exit_code.trim()));
-    }
-    if let Some(output) = context.output.as_deref().and_then(non_empty) {
-        sections.push(fenced_block("Output:", None, output.trim()));
-    }
-    if let Some(question) = question.and_then(non_empty) {
-        sections.push(format!("Question: {question}"));
-    }
-    sections.extend(files.iter().map(format_file));
-    sections.join("\n\n")
-}
-
 fn format_file(file: &FileContext) -> String {
     fenced_block(
         &format!("File: {}", file.path.display()),
-        None,
         file.contents.trim_end(),
     )
 }
 
-fn fenced_block(label: &str, info: Option<&str>, contents: &str) -> String {
+fn fenced_block(label: &str, contents: &str) -> String {
     let fence = "`".repeat(longest_run(contents, '`').max(2) + 1);
-    let opening = match info {
-        Some(info) => format!("{fence}{info}"),
-        None => fence.clone(),
-    };
-    format!("{label}\n{opening}\n{contents}\n{fence}")
+    format!("{}\n{fence}\n{contents}\n{fence}", sanitize_label(label))
+}
+
+fn sanitize_label(label: &str) -> String {
+    label
+        .chars()
+        .map(|character| {
+            if character.is_control() || character == '`' {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
 }
 
 fn longest_run(text: &str, needle: char) -> usize {
@@ -176,44 +139,14 @@ mod tests {
     }
 
     #[test]
-    fn appends_files_to_question_and_why_prompts() {
+    fn appends_files_to_question_prompts() {
         assert_eq!(
             compose_question(Some("explain this"), &[file("main.rs", "fn main() {}\n")]),
             "explain this\n\nFile: main.rs\n```\nfn main() {}\n```"
         );
         assert_eq!(
-            compose_why(
-                &WhyContext::default(),
-                Some("what now?"),
-                &[file("build.log", "boom\n")]
-            ),
-            "Question: what now?\n\nFile: build.log\n```\nboom\n```"
-        );
-    }
-
-    #[test]
-    fn composes_why_context() {
-        let context = WhyContext {
-            command: Some("cargo build".to_string()),
-            exit_code: Some("101".to_string()),
-            output: Some("error[E0308]: mismatched types".to_string()),
-        };
-        let prompt = compose_why(&context, Some("how do I fix it?"), &[]);
-        assert_eq!(
-            prompt,
-            "Command:\n```sh\ncargo build\n```\n\nExit code: 101\n\nOutput:\n```\nerror[E0308]: mismatched types\n```\n\nQuestion: how do I fix it?"
-        );
-    }
-
-    #[test]
-    fn composes_why_from_piped_output_only() {
-        let context = WhyContext {
-            output: Some("error: could not compile".to_string()),
-            ..WhyContext::default()
-        };
-        assert_eq!(
-            compose_why(&context, None, &[]),
-            "Output:\n```\nerror: could not compile\n```"
+            compose_question(None, &[file("build.log", "boom\n")]),
+            "File: build.log\n```\nboom\n```"
         );
     }
 
@@ -229,24 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn detects_missing_why_context_and_empty_prompts() {
-        assert!(compose_why(&WhyContext::default(), None, &[]).is_empty());
+    fn empty_question_without_files_is_empty() {
         assert!(compose_question(None, &[]).is_empty());
-        assert!(!WhyContext::default().has_context(&[]));
-        assert!(
-            WhyContext {
-                command: Some("cargo build".to_string()),
-                ..WhyContext::default()
-            }
-            .has_context(&[])
-        );
-        assert!(
-            WhyContext {
-                output: Some("error: nope".to_string()),
-                ..WhyContext::default()
-            }
-            .has_context(&[])
-        );
-        assert!(WhyContext::default().has_context(&[file("build.log", "boom")]));
     }
 }

@@ -65,9 +65,6 @@ async fn dispatch() -> Result<ExitCode, String> {
     }
 
     let options = Options::parse(&args)?;
-    if options.why && options.continue_session {
-        return Err("-c/--continue cannot be combined with -y/--why".to_string());
-    }
     let prompt = build_prompt(&options)?;
     if prompt.trim().is_empty() {
         eprintln!("USAGE: {program} <prompt>  (or pipe prompt on stdin)");
@@ -81,43 +78,26 @@ async fn dispatch() -> Result<ExitCode, String> {
 fn build_prompt(options: &Options) -> Result<String, String> {
     let question = (!options.prompt.is_empty()).then(|| options.prompt.join(" "));
     let files = context::load_files(&options.files)?;
-
-    if options.why {
-        let mut why = context::WhyContext::from_env();
-        if !io::stdin().is_terminal() {
-            why.output = Some(util::read_prompt_stdin()?);
-        }
-        if !why.has_context(&files) {
-            return Err(
-                "--why needs failure context: use huh-why, pipe the failed command's output, or pass --file"
-                    .to_string(),
-            );
-        }
-        Ok(context::compose_why(&why, question.as_deref(), &files))
-    } else {
-        let question = match question {
-            Some(question) => Some(question),
-            None if !io::stdin().is_terminal() => Some(util::read_prompt_stdin()?),
-            None => None,
-        };
-        Ok(context::compose_question(question.as_deref(), &files))
-    }
+    let question = match question {
+        Some(question) => Some(question),
+        None if !io::stdin().is_terminal() => Some(util::read_prompt_stdin()?),
+        None => None,
+    };
+    Ok(context::compose_question(question.as_deref(), &files))
 }
 
 async fn run_request(options: Options, prompt: String) -> Result<(), String> {
-    let api_key = match config::env_api_key() {
-        Some(api_key) => api_key,
-        None => Config::load()?
-            .api_key()
-            .map(str::to_owned)
-            .ok_or_else(|| "no API key found; run `huh --login`".to_string())?,
+    let config = match Config::load() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("warning: {error}");
+            Config::default()
+        }
     };
-    let env_model = config::env_model();
-    let model = options
-        .model
-        .as_deref()
-        .or(env_model.as_deref())
-        .unwrap_or(config::DEFAULT_MODEL);
+    let api_key = config::resolved_api_key(&config)
+        .ok_or_else(|| "no API key found; run `huh --login`".to_string())?;
+    let model = config::resolved_model(&config, options.model.as_deref());
+    let search = config::resolved_search(&config, options.search);
 
     let mut history = if options.continue_session {
         let mut messages = session::load_session()?;
@@ -131,12 +111,7 @@ async fn run_request(options: Options, prompt: String) -> Result<(), String> {
     };
     history.push(Message::user(prompt));
 
-    let mode = if options.why {
-        api::PromptMode::Why
-    } else {
-        api::PromptMode::Ask
-    };
-    let body = api::build_body(model, &history, options.search, mode);
+    let body = api::build_body(&model, &history, search);
 
     let client = api::client()?;
     let spinner = output::Spinner::start();
@@ -146,13 +121,13 @@ async fn run_request(options: Options, prompt: String) -> Result<(), String> {
     if answer.trim().is_empty() {
         return Err("model returned no answer content".to_string());
     }
-    if options.why {
-        return Ok(());
-    }
 
     history.push(Message::assistant(answer));
     session::trim_history(&mut history);
-    session::save_session(&history)
+    if let Err(error) = session::save_session(&history) {
+        eprintln!("warning: {error}");
+    }
+    Ok(())
 }
 
 #[tokio::main]
@@ -160,7 +135,7 @@ async fn main() -> ExitCode {
     match dispatch().await {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("ERROR: {error}");
+            eprintln!("ERROR: {}", render::sanitize(&error));
             ExitCode::FAILURE
         }
     }

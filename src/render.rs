@@ -27,11 +27,26 @@ struct Fence {
     count: usize,
 }
 
+#[derive(Clone, Copy)]
+enum Align {
+    Left,
+    Center,
+    Right,
+}
+
+struct Table {
+    header: Vec<String>,
+    align: Vec<Align>,
+    rows: Vec<Vec<String>>,
+}
+
 pub(crate) struct Renderer {
     markdown: bool,
     color: bool,
     pending: String,
     fence: Option<Fence>,
+    table: Option<Table>,
+    table_header: Option<(String, String)>,
     wrote: bool,
     ended_with_newline: bool,
 }
@@ -48,6 +63,8 @@ impl Renderer {
             color,
             pending: String::new(),
             fence: None,
+            table: None,
+            table_header: None,
             wrote: false,
             ended_with_newline: true,
         }
@@ -66,12 +83,32 @@ impl Renderer {
         let Some(last_newline) = text.rfind('\n') else {
             return false;
         };
-        let complete = &text[..last_newline];
-        let (first, rest) = complete
-            .split_once('\n')
-            .map_or((complete, ""), |(first, rest)| (first, rest));
-        let first_blank = self.pending.trim().is_empty() && first.trim().is_empty();
-        !first_blank || rest.lines().any(|line| !line.trim().is_empty())
+        let mut table_active = self.table.is_some();
+        let mut table_header = self.table_header.is_some();
+
+        for line in text[..last_newline].split('\n') {
+            if table_active {
+                if is_table_row(line) {
+                    continue;
+                }
+                return true;
+            }
+            if table_header {
+                if delimiter_alignments(line).is_some() {
+                    table_active = true;
+                    table_header = false;
+                    continue;
+                }
+                return true;
+            }
+            if is_table_row(line) {
+                table_header = true;
+                continue;
+            }
+            return true;
+        }
+
+        false
     }
 
     pub(crate) fn write(&mut self, text: &str, out: &mut impl Write) -> io::Result<()> {
@@ -99,6 +136,10 @@ impl Renderer {
                 let line = std::mem::take(&mut self.pending);
                 self.render_line(line.trim_end_matches(['\r', '\n']), out)?;
             }
+            if let Some((indent, header)) = self.table_header.take() {
+                self.render_block_line(&indent, &header, out)?;
+            }
+            self.flush_table(out)?;
             if self.fence.is_some() {
                 self.write_fence_bottom(out)?;
                 self.fence = None;
@@ -150,6 +191,40 @@ impl Renderer {
             return Ok(());
         }
 
+        if let Some(table) = self.table.as_mut() {
+            if is_table_row(trimmed) {
+                table.rows.push(split_row(trimmed));
+                return Ok(());
+            }
+            self.flush_table(out)?;
+        }
+
+        if let Some((header_indent, header)) = self.table_header.take() {
+            if let Some(align) = delimiter_alignments(trimmed) {
+                self.table = Some(Table {
+                    header: split_row(&header),
+                    align,
+                    rows: Vec::new(),
+                });
+                return Ok(());
+            }
+            self.render_block_line(&header_indent, &header, out)?;
+        }
+
+        if is_table_row(trimmed) {
+            self.table_header = Some((indent.to_string(), trimmed.to_string()));
+            return Ok(());
+        }
+
+        self.render_block_line(indent, trimmed, out)
+    }
+
+    fn render_block_line(
+        &mut self,
+        indent: &str,
+        trimmed: &str,
+        out: &mut impl Write,
+    ) -> io::Result<()> {
         if trimmed.is_empty() {
             return writeln!(out);
         }
@@ -206,6 +281,103 @@ impl Renderer {
     ) -> io::Result<()> {
         let rendered = render_inline(text, base, self.color);
         out.write_all(rendered.as_bytes())?;
+        writeln!(out)
+    }
+
+    fn flush_table(&mut self, out: &mut impl Write) -> io::Result<()> {
+        if let Some(table) = self.table.take() {
+            self.write_table(&table, out)?;
+        }
+        Ok(())
+    }
+
+    fn write_table(&self, table: &Table, out: &mut impl Write) -> io::Result<()> {
+        let columns = table
+            .header
+            .len()
+            .max(table.rows.iter().map(Vec::len).max().unwrap_or(0));
+        if columns == 0 {
+            return Ok(());
+        }
+
+        let align: Vec<Align> = (0..columns)
+            .map(|index| table.align.get(index).copied().unwrap_or(Align::Left))
+            .collect();
+        let header: Vec<String> = (0..columns)
+            .map(|index| {
+                render_inline(
+                    table.header.get(index).map_or("", String::as_str),
+                    &[HEADING],
+                    self.color,
+                )
+            })
+            .collect();
+        let rows: Vec<Vec<String>> = table
+            .rows
+            .iter()
+            .map(|row| {
+                (0..columns)
+                    .map(|index| {
+                        render_inline(row.get(index).map_or("", String::as_str), &[], self.color)
+                    })
+                    .collect()
+            })
+            .collect();
+
+        let mut widths = vec![1usize; columns];
+        for (index, cell) in header.iter().enumerate() {
+            widths[index] = widths[index].max(display_width(cell));
+        }
+        for row in &rows {
+            for (index, cell) in row.iter().enumerate() {
+                widths[index] = widths[index].max(display_width(cell));
+            }
+        }
+
+        let border = |left: &str, middle: &str, right: &str| {
+            let segments: Vec<String> = widths.iter().map(|width| "─".repeat(width + 2)).collect();
+            format!("{left}{}{right}", segments.join(middle))
+        };
+
+        self.write_styled(out, CYAN, &border("┌", "┬", "┐"))?;
+        writeln!(out)?;
+        self.write_table_row(out, &header, &widths, &align)?;
+        if !rows.is_empty() {
+            self.write_styled(out, CYAN, &border("├", "┼", "┤"))?;
+            writeln!(out)?;
+            for row in &rows {
+                self.write_table_row(out, row, &widths, &align)?;
+            }
+        }
+        self.write_styled(out, CYAN, &border("└", "┴", "┘"))?;
+        writeln!(out)
+    }
+
+    fn write_table_row(
+        &self,
+        out: &mut impl Write,
+        cells: &[String],
+        widths: &[usize],
+        align: &[Align],
+    ) -> io::Result<()> {
+        self.write_styled(out, CYAN, "│")?;
+        for ((cell, width), align) in cells.iter().zip(widths).zip(align) {
+            let padding = width.saturating_sub(display_width(cell));
+            let (left, right) = match align {
+                Align::Left => (0, padding),
+                Align::Right => (padding, 0),
+                Align::Center => (padding / 2, padding - padding / 2),
+            };
+            out.write_all(b" ")?;
+            for _ in 0..left {
+                out.write_all(b" ")?;
+            }
+            out.write_all(cell.as_bytes())?;
+            for _ in 0..right {
+                out.write_all(b" ")?;
+            }
+            self.write_styled(out, CYAN, " │")?;
+        }
         writeln!(out)
     }
 
@@ -325,7 +497,7 @@ fn fence_close(line: &str, indent: &str, fence: &Fence) -> bool {
         && indent.len() <= fence.indent.len().max(3)
 }
 
-fn sanitize(text: &str) -> Cow<'_, str> {
+pub(crate) fn sanitize(text: &str) -> Cow<'_, str> {
     if !text.chars().any(char::is_control) {
         return Cow::Borrowed(text);
     }
@@ -339,6 +511,77 @@ fn sanitize(text: &str) -> Cow<'_, str> {
             })
             .collect(),
     )
+}
+
+fn is_table_row(line: &str) -> bool {
+    line.contains('|')
+}
+
+fn split_row(line: &str) -> Vec<String> {
+    let trimmed = line.trim();
+    let trimmed = trimmed.strip_prefix('|').unwrap_or(trimmed);
+    let trimmed = trimmed.strip_suffix('|').unwrap_or(trimmed);
+    let mut cells = Vec::new();
+    let mut start = 0;
+    let mut escaped = false;
+
+    for (index, character) in trimmed.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' => escaped = true,
+            '|' => {
+                cells.push(trimmed[start..index].trim().to_string());
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    cells.push(trimmed[start..].trim().to_string());
+    cells
+}
+
+fn delimiter_alignments(line: &str) -> Option<Vec<Align>> {
+    let cells = split_row(line);
+    if cells.is_empty() {
+        return None;
+    }
+
+    let mut alignments = Vec::with_capacity(cells.len());
+    for cell in cells {
+        let cell = cell.trim();
+        let left = cell.starts_with(':');
+        let right = cell.ends_with(':');
+        let dashes = cell.trim_start_matches(':').trim_end_matches(':');
+        if dashes.len() < 3 || !dashes.chars().all(|character| character == '-') {
+            return None;
+        }
+        alignments.push(match (left, right) {
+            (true, true) => Align::Center,
+            (false, true) => Align::Right,
+            _ => Align::Left,
+        });
+    }
+    Some(alignments)
+}
+
+fn display_width(text: &str) -> usize {
+    let mut width = 0;
+    let mut escaped = false;
+    for character in text.chars() {
+        if escaped {
+            if character == 'm' {
+                escaped = false;
+            }
+        } else if character == '\x1b' {
+            escaped = true;
+        } else {
+            width += 1;
+        }
+    }
+    width
 }
 
 fn render_inline(text: &str, base: &[&'static str], color: bool) -> String {
@@ -537,6 +780,12 @@ mod tests {
 
         assert!(render("- [x] done\n").contains("☑ done"));
         assert!(render("- [ ] todo\n").contains("☐ todo"));
+
+        let table =
+            render("| Name | Link |\n|:---|---:|\n| Example | [docs](https://example.com) |\n");
+        assert!(table.contains("┌"));
+        assert!(table.contains("Name"));
+        assert!(table.contains("https://example.com"));
     }
 
     #[test]
