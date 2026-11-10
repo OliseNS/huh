@@ -439,22 +439,6 @@ mod tests {
     }
 
     #[test]
-    fn closing_fence_ignores_info_string() {
-        let output = render("```\n``` rust\ncode\n```\n");
-        assert!(output.contains("│ ``` rust"));
-        assert!(output.contains("│ code"));
-    }
-
-    #[test]
-    fn renders_headings_lists_and_bold() {
-        let output = render("# Title\n- **bold** item\n");
-        assert!(output.contains("Title"));
-        assert!(!output.contains('#'));
-        assert!(output.contains("• bold item"));
-        assert!(!output.contains("**"));
-    }
-
-    #[test]
     fn renders_code_fences() {
         let output = render("```rust\nlet x = 1;\n```\n");
         assert!(output.contains("╭─ rust"));
@@ -465,21 +449,28 @@ mod tests {
 
     #[test]
     fn fences_only_close_with_their_opening_marker() {
-        let output = render("```\ncode\n~~~\nmore\n```\n");
-        assert!(output.contains("│ ~~~"));
-        assert!(output.contains("│ more"));
+        let info = render("```\n``` rust\ncode\n```\n");
+        assert!(info.contains("│ ``` rust"));
+        assert!(info.contains("│ code"));
+
+        let tildes = render("```\ncode\n~~~\nmore\n```\n");
+        assert!(tildes.contains("│ ~~~"));
+        assert!(tildes.contains("│ more"));
     }
 
     #[test]
-    fn renders_links_and_inline_code() {
-        let output = render("see [docs](https://example.com) and `code`\n");
-        assert!(output.contains("docs <https://example.com>"));
-        assert!(output.contains("code"));
-        assert!(!output.contains("`code`"));
-    }
+    fn renders_common_markdown() {
+        let headings = render("# Title\n- **bold** item\n");
+        assert!(headings.contains("Title"));
+        assert!(!headings.contains('#'));
+        assert!(headings.contains("• bold item"));
+        assert!(!headings.contains("**"));
 
-    #[test]
-    fn renders_task_list_items() {
+        let links = render("see [docs](https://example.com) and `code`\n");
+        assert!(links.contains("docs <https://example.com>"));
+        assert!(links.contains("code"));
+        assert!(!links.contains("`code`"));
+
         assert!(render("- [x] done\n").contains("☑ done"));
         assert!(render("- [ ] todo\n").contains("☐ todo"));
     }

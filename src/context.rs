@@ -131,11 +131,18 @@ mod tests {
     }
 
     #[test]
-    fn composes_question_with_files() {
-        let prompt = compose_question(Some("explain this"), &[file("main.rs", "fn main() {}\n")]);
+    fn appends_files_to_question_and_why_prompts() {
         assert_eq!(
-            prompt,
+            compose_question(Some("explain this"), &[file("main.rs", "fn main() {}\n")]),
             "explain this\n\nFile: main.rs\n```\nfn main() {}\n```"
+        );
+        assert_eq!(
+            compose_why(
+                &WhyContext::default(),
+                Some("what now?"),
+                &[file("build.log", "boom\n")]
+            ),
+            "Question: what now?\n\nFile: build.log\n```\nboom\n```"
         );
     }
 
@@ -166,19 +173,6 @@ mod tests {
     }
 
     #[test]
-    fn composes_why_with_files() {
-        let prompt = compose_why(
-            &WhyContext::default(),
-            Some("what now?"),
-            &[file("build.log", "boom\n")],
-        );
-        assert_eq!(
-            prompt,
-            "Question: what now?\n\nFile: build.log\n```\nboom\n```"
-        );
-    }
-
-    #[test]
     fn loads_named_files() {
         let path =
             std::env::temp_dir().join(format!("huh-context-test-{}.txt", std::process::id()));
@@ -190,13 +184,9 @@ mod tests {
     }
 
     #[test]
-    fn empty_context_produces_empty_prompt() {
+    fn detects_missing_why_context_and_empty_prompts() {
         assert!(compose_why(&WhyContext::default(), None, &[]).is_empty());
         assert!(compose_question(None, &[]).is_empty());
-    }
-
-    #[test]
-    fn detects_missing_why_context() {
         assert!(!WhyContext::default().has_context(&[]));
         assert!(
             WhyContext {

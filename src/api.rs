@@ -271,10 +271,14 @@ mod tests {
     }
 
     #[test]
-    fn body_enables_web_search_by_default() {
-        let plain = ask_body(SearchMode::Auto);
-        assert_eq!(plain["tools"], json!([{ "type": "openrouter:web_search" }]));
-        assert!(plain.get("tool_choice").is_none());
+    fn ask_mode_toggles_web_search() {
+        let auto = ask_body(SearchMode::Auto);
+        assert_eq!(auto["tools"], json!([{ "type": "openrouter:web_search" }]));
+        assert!(auto.get("tool_choice").is_none());
+
+        let disabled = ask_body(SearchMode::Disabled);
+        assert!(disabled.get("tools").is_none());
+        assert!(disabled.get("tool_choice").is_none());
     }
 
     #[test]
@@ -288,13 +292,6 @@ mod tests {
             forced["tool_choice"],
             json!({ "type": "openrouter:web_search" })
         );
-    }
-
-    #[test]
-    fn no_search_disables_web_search() {
-        let plain = ask_body(SearchMode::Disabled);
-        assert!(plain.get("tools").is_none());
-        assert!(plain.get("tool_choice").is_none());
     }
 
     #[test]
@@ -334,18 +331,15 @@ mod tests {
     }
 
     #[test]
-    fn body_uses_oneshot_prompt_for_fresh_turn() {
-        let body = ask_body(SearchMode::Auto);
-        let messages = body["messages"].as_array().unwrap();
+    fn body_selects_prompt_and_messages_for_fresh_and_continued_turns() {
+        let fresh = ask_body(SearchMode::Auto);
+        let messages = fresh["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0]["role"], json!("system"));
         assert_eq!(messages[0]["content"], json!(SYSTEM_PROMPT));
         assert_eq!(messages[1]["role"], json!("user"));
         assert_eq!(messages[1]["content"], json!("hi"));
-    }
 
-    #[test]
-    fn body_builds_messages_from_history_with_conversation_prompt() {
         let history = vec![
             Message::user("first question"),
             Message::assistant("first answer"),
@@ -365,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn why_mode_uses_debugging_prompt() {
+    fn why_mode_uses_debugging_prompt_without_search_by_default() {
         let body = build_body(
             "vendor/model",
             &[Message::user("command failed")],
@@ -373,16 +367,6 @@ mod tests {
             PromptMode::Why,
         );
         assert_eq!(body["messages"][0]["content"], json!(WHY_SYSTEM_PROMPT));
-    }
-
-    #[test]
-    fn why_mode_disables_web_search_by_default() {
-        let body = build_body(
-            "vendor/model",
-            &[Message::user("command failed")],
-            SearchMode::Auto,
-            PromptMode::Why,
-        );
         assert!(body.get("tools").is_none());
         assert!(body.get("tool_choice").is_none());
     }

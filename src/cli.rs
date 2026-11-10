@@ -144,7 +144,7 @@ mod tests {
 
     #[test]
     fn parses_short_and_long_options() {
-        let options = parse(&[
+        let short = parse(&[
             "-m",
             "vendor/model",
             "-s",
@@ -157,20 +157,17 @@ mod tests {
             "hello",
             "world",
         ]);
-        assert_eq!(options.model.as_deref(), Some("vendor/model"));
-        assert_eq!(options.search, SearchMode::Force);
-        assert!(options.why);
-        assert!(options.continue_session);
+        assert_eq!(short.model.as_deref(), Some("vendor/model"));
+        assert_eq!(short.search, SearchMode::Force);
+        assert!(short.why);
+        assert!(short.continue_session);
         assert_eq!(
-            options.files,
+            short.files,
             vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")]
         );
-        assert_eq!(options.prompt.join(" "), "hello world");
-    }
+        assert_eq!(short.prompt.join(" "), "hello world");
 
-    #[test]
-    fn parses_long_aliases() {
-        let options = parse(&[
+        let long = parse(&[
             "--model",
             "vendor/model",
             "--search",
@@ -181,12 +178,12 @@ mod tests {
             "a.rs",
             "hi",
         ]);
-        assert_eq!(options.model.as_deref(), Some("vendor/model"));
-        assert_eq!(options.search, SearchMode::Disabled);
-        assert!(options.continue_session);
-        assert!(options.why);
-        assert_eq!(options.files, vec![PathBuf::from("a.rs")]);
-        assert_eq!(options.prompt.join(" "), "hi");
+        assert_eq!(long.model.as_deref(), Some("vendor/model"));
+        assert_eq!(long.search, SearchMode::Disabled);
+        assert!(long.continue_session);
+        assert!(long.why);
+        assert_eq!(long.files, vec![PathBuf::from("a.rs")]);
+        assert_eq!(long.prompt.join(" "), "hi");
     }
 
     #[test]
@@ -199,8 +196,10 @@ mod tests {
     }
 
     #[test]
-    fn flags_are_off_by_default() {
-        let options = parse(&["hello"]);
+    fn double_dash_treats_the_rest_as_prompt_and_keeps_defaults() {
+        let options = parse(&["--", "-m", "not-a-flag"]);
+        assert_eq!(options.model, None);
+        assert_eq!(options.prompt.join(" "), "-m not-a-flag");
         assert_eq!(options.search, SearchMode::Auto);
         assert!(!options.continue_session);
         assert!(!options.why);
@@ -208,24 +207,14 @@ mod tests {
     }
 
     #[test]
-    fn double_dash_treats_the_rest_as_prompt() {
-        let options = parse(&["--", "-m", "not-a-flag"]);
-        assert_eq!(options.model, None);
-        assert_eq!(options.prompt.join(" "), "-m not-a-flag");
-    }
+    fn rejects_invalid_options() {
+        let unknown = vec!["--nope".to_string()];
+        assert!(Options::parse(&unknown).is_err());
 
-    #[test]
-    fn rejects_unknown_options() {
-        let args = vec!["--nope".to_string()];
-        assert!(Options::parse(&args).is_err());
-    }
-
-    #[test]
-    fn rejects_flag_like_file_values() {
-        let args: Vec<String> = ["--file", "--why", "hi"]
+        let flag_file: Vec<String> = ["--file", "--why", "hi"]
             .iter()
             .map(|value| value.to_string())
             .collect();
-        assert!(Options::parse(&args).is_err());
+        assert!(Options::parse(&flag_file).is_err());
     }
 }
