@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::config::{DEFAULT_MODEL, DEFAULT_WHY_MODEL};
+use crate::config::DEFAULT_MODEL;
 use crate::util::non_empty;
 
 pub(crate) fn help() -> String {
@@ -24,27 +24,18 @@ WEB SEARCH:
   -s, --search                    Force a web search
   -ns, --no-search                Disable web search for this request
 
-SOUND:
-  -q, --no-sound                  Mute the answer sound effect
-
 OPTIONS:
   -m, --model <name>              Model for this request
-  -e, --effort <low|medium|high>  Reasoning effort for this request
   -h, --help                      Show this help
 
 COMMANDS:
+  -u, --update                    Rebuild and reinstall from source
   --login                         Save your OpenRouter API key
   --logout                        Remove the saved API key
-  --set-model <name>              Save the default model
-  --set-why-model <name>          Save the model used by --why
-  --set-sound <on|off>            Enable or disable the answer sound effect
-  --config                        Show the effective configuration
-  --config-path                   Print the config file path
+  --config                        Show configuration and defaults
 
 DEFAULT MODEL:
-  {DEFAULT_MODEL}
-DEFAULT WHY MODEL:
-  {DEFAULT_WHY_MODEL}
+  {DEFAULT_MODEL} (override with -m)
 
 ENVIRONMENT:
   OPENROUTER_API_KEY           Overrides the saved API key
@@ -53,33 +44,6 @@ ENVIRONMENT:
   HUH_LAST_EXIT_CODE           Previous exit code for --why (set by huh-why)
 "
     )
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum ThinkingEffort {
-    #[default]
-    Low,
-    Medium,
-    High,
-}
-
-impl ThinkingEffort {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-        }
-    }
-
-    fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "low" => Some(Self::Low),
-            "medium" => Some(Self::Medium),
-            "high" => Some(Self::High),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -93,11 +57,9 @@ pub(crate) enum SearchMode {
 #[derive(Default)]
 pub(crate) struct Options {
     pub(crate) model: Option<String>,
-    pub(crate) effort: Option<ThinkingEffort>,
     pub(crate) search: SearchMode,
     pub(crate) continue_session: bool,
     pub(crate) why: bool,
-    pub(crate) no_sound: bool,
     pub(crate) files: Vec<PathBuf>,
     pub(crate) prompt: Vec<String>,
 }
@@ -123,12 +85,6 @@ impl Options {
                                 .to_string(),
                         );
                     }
-                    "-e" | "--effort" => {
-                        let value = next_value(args, &mut index, arg)?;
-                        options.effort = Some(ThinkingEffort::parse(value).ok_or_else(|| {
-                            format!("invalid effort: {value} (use low, medium, or high)")
-                        })?);
-                    }
                     "-f" | "--file" => {
                         let value = next_value(args, &mut index, arg)?;
                         if value.is_empty() {
@@ -145,7 +101,6 @@ impl Options {
                     "-ns" | "--no-search" => options.search = SearchMode::Disabled,
                     "-c" | "--continue" => options.continue_session = true,
                     "-y" | "--why" => options.why = true,
-                    "-q" | "--no-sound" => options.no_sound = true,
                     option if option.starts_with('-') && option != "-" => {
                         return Err(format!(
                             "unknown option: {option}\nRun `huh --help` for usage."
@@ -176,18 +131,6 @@ pub(crate) fn no_extra_args(args: &[String], option: &str) -> Result<(), String>
     }
 }
 
-fn single_value<'a>(args: &'a [String], option: &str) -> Result<Option<&'a str>, String> {
-    match args {
-        [] => Ok(None),
-        [value] => Ok(Some(value.as_str())),
-        _ => Err(format!("{option} takes at most one value")),
-    }
-}
-
-pub(crate) fn required_value<'a>(args: &'a [String], option: &str) -> Result<&'a str, String> {
-    single_value(args, option)?.ok_or_else(|| format!("{option} requires a value"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,25 +141,12 @@ mod tests {
     }
 
     #[test]
-    fn parses_effort_case_insensitively() {
-        assert_eq!(ThinkingEffort::parse(" HIGH "), Some(ThinkingEffort::High));
-        assert_eq!(
-            ThinkingEffort::parse("Medium"),
-            Some(ThinkingEffort::Medium)
-        );
-        assert_eq!(ThinkingEffort::parse("extreme"), None);
-    }
-
-    #[test]
     fn parses_short_and_long_options() {
         let options = parse(&[
             "-m",
             "vendor/model",
-            "-e",
-            "HIGH",
             "-s",
             "-y",
-            "-q",
             "-c",
             "-f",
             "a.rs",
@@ -226,10 +156,8 @@ mod tests {
             "world",
         ]);
         assert_eq!(options.model.as_deref(), Some("vendor/model"));
-        assert_eq!(options.effort, Some(ThinkingEffort::High));
         assert_eq!(options.search, SearchMode::Force);
         assert!(options.why);
-        assert!(options.no_sound);
         assert!(options.continue_session);
         assert_eq!(
             options.files,
@@ -243,30 +171,20 @@ mod tests {
         let options = parse(&[
             "--model",
             "vendor/model",
-            "--effort",
-            "low",
             "--search",
             "--no-search",
             "--continue",
             "--why",
-            "--no-sound",
             "--file",
             "a.rs",
             "hi",
         ]);
         assert_eq!(options.model.as_deref(), Some("vendor/model"));
-        assert_eq!(options.effort, Some(ThinkingEffort::Low));
         assert_eq!(options.search, SearchMode::Disabled);
         assert!(options.continue_session);
         assert!(options.why);
-        assert!(options.no_sound);
         assert_eq!(options.files, vec![PathBuf::from("a.rs")]);
         assert_eq!(options.prompt.join(" "), "hi");
-    }
-
-    #[test]
-    fn no_search_is_off_by_default() {
-        assert_eq!(parse(&["hello"]).search, SearchMode::Auto);
     }
 
     #[test]
@@ -281,9 +199,9 @@ mod tests {
     #[test]
     fn flags_are_off_by_default() {
         let options = parse(&["hello"]);
+        assert_eq!(options.search, SearchMode::Auto);
         assert!(!options.continue_session);
         assert!(!options.why);
-        assert!(!options.no_sound);
         assert!(options.files.is_empty());
     }
 

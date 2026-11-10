@@ -25,11 +25,7 @@ pub(crate) fn read_secret(label: &str) -> Result<String, String> {
         rpassword::prompt_password(label)
             .map_err(|error| format!("failed to read API key: {error}"))
     } else {
-        let mut input = String::new();
-        io::stdin()
-            .read_to_string(&mut input)
-            .map_err(|error| format!("failed to read stdin: {error}"))?;
-        Ok(input.lines().next().unwrap_or_default().to_string())
+        Ok(read_stdin()?.lines().next().unwrap_or_default().to_string())
     }
 }
 

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::storage::{LoadError, load_json, save_json, xdg_path};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Message {
     pub(crate) role: String,
     pub(crate) content: String,
@@ -27,8 +27,8 @@ impl Message {
     }
 }
 
-const MAX_HISTORY_MESSAGES: usize = 10;
-const MAX_HISTORY_CHARS: usize = 40_000;
+const MAX_HISTORY_MESSAGES: usize = 20;
+const MAX_HISTORY_CHARS: usize = 80_000;
 
 pub(crate) fn trim_history(messages: &mut Vec<Message>) {
     let mut chars: usize = messages
@@ -36,11 +36,9 @@ pub(crate) fn trim_history(messages: &mut Vec<Message>) {
         .map(|message| message.content.chars().count())
         .sum();
 
-    while messages.len() > MAX_HISTORY_MESSAGES
-        || (chars > MAX_HISTORY_CHARS && !messages.is_empty())
+    while (messages.len() > MAX_HISTORY_MESSAGES || chars > MAX_HISTORY_CHARS) && messages.len() > 4
     {
-        let drop_count = 2.min(messages.len());
-        for message in messages.drain(..drop_count) {
+        for message in messages.drain(2..4) {
             chars -= message.content.chars().count();
         }
     }
@@ -51,15 +49,11 @@ fn state_path() -> Result<PathBuf, String> {
 }
 
 fn valid_history(messages: &[Message]) -> bool {
-    messages.len().is_multiple_of(2)
-        && messages.iter().enumerate().all(|(index, message)| {
-            let expected = if index.is_multiple_of(2) {
-                "user"
-            } else {
-                "assistant"
-            };
-            message.role == expected
-        })
+    let (pairs, remainder) = messages.as_chunks::<2>();
+    remainder.is_empty()
+        && pairs
+            .iter()
+            .all(|pair| pair[0].role == "user" && pair[1].role == "assistant")
 }
 
 fn backup_invalid_session(path: &Path) {
@@ -135,28 +129,46 @@ mod tests {
     }
 
     #[test]
-    fn trims_history_to_five_pairs() {
-        let mut messages = conversation(8, 0);
+    fn trims_history_to_ten_pairs_keeping_the_original_pair() {
+        let mut messages = conversation(12, 0);
         trim_history(&mut messages);
         assert_eq!(messages.len(), MAX_HISTORY_MESSAGES);
-        assert_eq!(messages[0], Message::user("q3"));
-        assert_eq!(messages[9], Message::assistant("a7"));
+        assert_eq!(messages[0], Message::user("q0"));
+        assert_eq!(messages[1], Message::assistant("a0"));
+        assert_eq!(messages[2], Message::user("q3"));
+        assert_eq!(messages[19], Message::assistant("a11"));
     }
 
     #[test]
-    fn trims_history_by_character_budget_dropping_whole_pairs() {
+    fn trims_history_by_character_budget_keeping_the_original_pair() {
         let mut messages = conversation(5, 10_000);
         trim_history(&mut messages);
-        assert_eq!(messages.len(), 4);
-        assert_eq!(messages[0], Message::user(padded("q3", 10_000, 'x')));
-        assert_eq!(messages[3], Message::assistant(padded("a4", 10_000, 'y')));
+        assert_eq!(messages.len(), 8);
+        assert_eq!(messages[0], Message::user(padded("q0", 10_000, 'x')));
+        assert_eq!(messages[1], Message::assistant(padded("a0", 10_000, 'y')));
+        assert_eq!(messages[2], Message::user(padded("q2", 10_000, 'x')));
+        assert_eq!(messages[7], Message::assistant(padded("a4", 10_000, 'y')));
     }
 
     #[test]
-    fn keeps_history_at_the_character_budget() {
-        let mut messages = conversation(2, 10_000);
+    fn keeps_original_and_latest_pairs_at_the_character_budget() {
+        let mut messages = conversation(4, 20_000);
         trim_history(&mut messages);
         assert_eq!(messages.len(), 4);
-        assert_eq!(messages[0], Message::user(padded("q0", 10_000, 'x')));
+        assert_eq!(messages[0], Message::user(padded("q0", 20_000, 'x')));
+        assert_eq!(messages[1], Message::assistant(padded("a0", 20_000, 'y')));
+        assert_eq!(messages[2], Message::user(padded("q3", 20_000, 'x')));
+        assert_eq!(messages[3], Message::assistant(padded("a3", 20_000, 'y')));
+    }
+
+    #[test]
+    fn keeps_original_and_latest_pairs_when_over_budget() {
+        let mut messages = conversation(3, 30_000);
+        trim_history(&mut messages);
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0], Message::user(padded("q0", 30_000, 'x')));
+        assert_eq!(messages[1], Message::assistant(padded("a0", 30_000, 'y')));
+        assert_eq!(messages[2], Message::user(padded("q2", 30_000, 'x')));
+        assert_eq!(messages[3], Message::assistant(padded("a2", 30_000, 'y')));
     }
 }

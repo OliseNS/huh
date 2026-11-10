@@ -12,12 +12,12 @@ pub(crate) fn load_files(paths: &[PathBuf]) -> Result<Vec<FileContext>, String> 
     paths
         .iter()
         .map(|path| {
-            let contents = fs::read_to_string(path)
-                .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-            Ok(FileContext {
-                path: path.clone(),
-                contents,
-            })
+            fs::read_to_string(path)
+                .map(|contents| FileContext {
+                    path: path.clone(),
+                    contents,
+                })
+                .map_err(|error| format!("failed to read {}: {error}", path.display()))
         })
         .collect()
 }
@@ -36,6 +36,12 @@ impl WhyContext {
             exit_code: env_value("HUH_LAST_EXIT_CODE"),
             output: None,
         }
+    }
+
+    pub(crate) fn has_context(&self, files: &[FileContext]) -> bool {
+        self.command.is_some()
+            || self.output.as_deref().and_then(non_empty).is_some()
+            || !files.is_empty()
     }
 }
 
@@ -152,5 +158,25 @@ mod tests {
     fn empty_context_produces_empty_prompt() {
         assert!(compose_why(&WhyContext::default(), None, &[]).is_empty());
         assert!(compose_question(None, &[]).is_empty());
+    }
+
+    #[test]
+    fn detects_missing_why_context() {
+        assert!(!WhyContext::default().has_context(&[]));
+        assert!(
+            WhyContext {
+                command: Some("cargo build".to_string()),
+                ..WhyContext::default()
+            }
+            .has_context(&[])
+        );
+        assert!(
+            WhyContext {
+                output: Some("error: nope".to_string()),
+                ..WhyContext::default()
+            }
+            .has_context(&[])
+        );
+        assert!(WhyContext::default().has_context(&[file("build.log", "boom")]));
     }
 }

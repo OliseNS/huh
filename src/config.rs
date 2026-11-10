@@ -5,20 +5,13 @@ use serde::{Deserialize, Serialize};
 use crate::storage::{load_json, save_json, xdg_path};
 use crate::util::{env_value, non_empty, read_secret};
 
-pub(crate) const DEFAULT_MODEL: &str = "openai/gpt-oss-20b:nitro";
-pub(crate) const DEFAULT_WHY_MODEL: &str = "openai/gpt-5-mini";
+pub(crate) const DEFAULT_MODEL: &str = "deepseek/deepseek-v4.1-flash-1017:nitro";
 
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     api_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    why_model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    sound: Option<bool>,
 }
 
 impl Config {
@@ -36,24 +29,6 @@ impl Config {
 
     pub(crate) fn api_key(&self) -> Option<&str> {
         self.api_key.as_deref().and_then(non_empty)
-    }
-
-    pub(crate) fn model(&self) -> &str {
-        self.model
-            .as_deref()
-            .and_then(non_empty)
-            .unwrap_or(DEFAULT_MODEL)
-    }
-
-    pub(crate) fn why_model(&self) -> &str {
-        self.why_model
-            .as_deref()
-            .and_then(non_empty)
-            .unwrap_or(DEFAULT_WHY_MODEL)
-    }
-
-    pub(crate) fn sound_enabled(&self) -> bool {
-        self.sound.unwrap_or(true)
     }
 }
 
@@ -99,36 +74,6 @@ pub(crate) fn logout() -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn set_model(value: &str) -> Result<(), String> {
-    let value = non_empty(value).ok_or_else(|| "model name cannot be empty".to_string())?;
-    update_config(|config| config.model = Some(value.to_string()))?;
-    println!("default model set to {value}");
-    Ok(())
-}
-
-pub(crate) fn set_why_model(value: &str) -> Result<(), String> {
-    let value = non_empty(value).ok_or_else(|| "model name cannot be empty".to_string())?;
-    update_config(|config| config.why_model = Some(value.to_string()))?;
-    println!("default --why model set to {value}");
-    Ok(())
-}
-
-pub(crate) fn set_sound(value: &str) -> Result<(), String> {
-    let enabled = parse_sound(value)
-        .ok_or_else(|| format!("invalid sound setting: {value} (use on or off)"))?;
-    update_config(|config| config.sound = Some(enabled))?;
-    println!("sound {}", if enabled { "on" } else { "off" });
-    Ok(())
-}
-
-fn parse_sound(value: &str) -> Option<bool> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "on" | "true" | "yes" | "1" => Some(true),
-        "off" | "false" | "no" | "0" => Some(false),
-        _ => None,
-    }
-}
-
 pub(crate) fn show_config(base_url: &str) -> Result<(), String> {
     let path = config_path()?;
     let config = Config::load()?;
@@ -141,14 +86,9 @@ pub(crate) fn show_config(base_url: &str) -> Result<(), String> {
     };
 
     println!("config:    {}", path.display());
-    println!("model:     {}", config.model());
-    println!("why model: {}", config.why_model());
-    println!(
-        "sound:     {}",
-        if config.sound_enabled() { "on" } else { "off" }
-    );
     println!("api key:   {api_key}");
     println!("base url:  {base_url}");
+    println!("model:     {DEFAULT_MODEL} (override with -m)");
     Ok(())
 }
 
@@ -157,32 +97,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn config_falls_back_to_defaults() {
-        let config = Config::default();
-        assert_eq!(config.model(), DEFAULT_MODEL);
-        assert_eq!(config.why_model(), DEFAULT_WHY_MODEL);
-        assert!(config.sound_enabled());
+    fn loads_api_key_and_drops_legacy_fields() {
+        let config: Config = serde_json::from_str(
+            r#"{"api_key":"sk-test","model":"old","why_model":"old","sound":false}"#,
+        )
+        .unwrap();
+        assert_eq!(config.api_key(), Some("sk-test"));
+        assert!(!serde_json::to_string(&config).unwrap().contains("model"));
+    }
+
+    #[test]
+    fn ignores_blank_api_key() {
+        let config: Config = serde_json::from_str(r#"{"api_key":"  "}"#).unwrap();
         assert_eq!(config.api_key(), None);
-    }
-
-    #[test]
-    fn ignores_legacy_effort_field() {
-        let config: Config =
-            serde_json::from_str(r#"{"model":"vendor/model","effort":"high"}"#).unwrap();
-        assert_eq!(config.model(), "vendor/model");
-        assert!(!serde_json::to_string(&config).unwrap().contains("effort"));
-    }
-
-    #[test]
-    fn reads_sound_setting() {
-        let config: Config = serde_json::from_str(r#"{"sound":false}"#).unwrap();
-        assert!(!config.sound_enabled());
-    }
-
-    #[test]
-    fn parses_sound_values() {
-        assert_eq!(parse_sound("on"), Some(true));
-        assert_eq!(parse_sound(" OFF "), Some(false));
-        assert_eq!(parse_sound("maybe"), None);
     }
 }

@@ -20,15 +20,11 @@ pub(crate) fn color_allowed() -> bool {
     env::var_os("NO_COLOR").is_none() && env::var("TERM").is_ok_and(|term| term != "dumb")
 }
 
-struct Fence {
-    indent: String,
-}
-
 pub(crate) struct Renderer {
     markdown: bool,
     color: bool,
     pending: String,
-    fence: Option<Fence>,
+    fence: Option<String>,
     wrote: bool,
     ended_with_newline: bool,
 }
@@ -69,7 +65,7 @@ impl Renderer {
         while let Some(position) = self.pending.find('\n') {
             let rest = self.pending.split_off(position + 1);
             let line = std::mem::replace(&mut self.pending, rest);
-            self.render_line(trim_newline(&line), out)?;
+            self.render_line(line.trim_end_matches(['\r', '\n']), out)?;
         }
         out.flush()
     }
@@ -78,7 +74,7 @@ impl Renderer {
         if self.markdown {
             if !self.pending.is_empty() {
                 let line = std::mem::take(&mut self.pending);
-                self.render_line(trim_newline(&line), out)?;
+                self.render_line(line.trim_end_matches(['\r', '\n']), out)?;
             }
             if self.fence.is_some() {
                 self.write_fence_bottom(out)?;
@@ -99,11 +95,7 @@ impl Renderer {
                 self.write_fence_bottom(out)?;
                 self.fence = None;
             } else {
-                let fence_indent = self
-                    .fence
-                    .as_ref()
-                    .map(|fence| fence.indent.as_str())
-                    .unwrap_or("");
+                let fence_indent = self.fence.as_deref().unwrap_or("");
                 let content = line.strip_prefix(fence_indent).unwrap_or(trimmed);
                 out.write_all(fence_indent.as_bytes())?;
                 self.write_styled(out, DIM, "│ ")?;
@@ -122,9 +114,7 @@ impl Renderer {
             out.write_all(indent.as_bytes())?;
             self.write_styled(out, DIM, &format!("╭─{label}"))?;
             writeln!(out)?;
-            self.fence = Some(Fence {
-                indent: indent.to_string(),
-            });
+            self.fence = Some(indent.to_string());
             return Ok(());
         }
 
@@ -189,7 +179,7 @@ impl Renderer {
 
     fn write_fence_bottom(&self, out: &mut impl Write) -> io::Result<()> {
         if let Some(fence) = &self.fence {
-            out.write_all(fence.indent.as_bytes())?;
+            out.write_all(fence.as_bytes())?;
             self.write_styled(out, DIM, "╰─")?;
             writeln!(out)?;
         }
@@ -203,11 +193,6 @@ impl Renderer {
             out.write_all(text.as_bytes())
         }
     }
-}
-
-fn trim_newline(line: &str) -> &str {
-    let line = line.strip_suffix('\n').unwrap_or(line);
-    line.strip_suffix('\r').unwrap_or(line)
 }
 
 fn heading(line: &str) -> Option<&str> {
@@ -301,9 +286,7 @@ fn fence_close(line: &str) -> bool {
 }
 
 fn render_inline(text: &str, base: &[&'static str], color: bool) -> String {
-    let mut options = Options::empty();
-    options.insert(Options::ENABLE_STRIKETHROUGH);
-    options.insert(Options::ENABLE_TASKLISTS);
+    let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
 
     let mut inline = Inline::new(base, color, text.len() + 16);
     let mut link: Option<(String, String)> = None;

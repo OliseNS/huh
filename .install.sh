@@ -12,6 +12,12 @@ if [[ ! -f "$BINARY" ]]; then
     exit 1
 fi
 
+if [[ -n "$(find src Cargo.toml Cargo.lock -newer "$BINARY" -print -quit 2>/dev/null)" ]]; then
+    echo "error: $BINARY is older than the source" >&2
+    echo "build it first with: cargo build --release --locked" >&2
+    exit 1
+fi
+
 install -d "$BIN_DIR"
 install -m 0755 "$BINARY" "$BIN_DIR/huh"
 

@@ -5,32 +5,18 @@ mod context;
 mod output;
 mod render;
 mod session;
-mod sound;
 mod storage;
+mod update;
 mod util;
 
 use std::env;
 use std::io::{self, IsTerminal};
 use std::process::ExitCode;
+use std::time::Instant;
 
-use cli::{Options, SearchMode, ThinkingEffort};
+use cli::Options;
 use config::Config;
 use session::Message;
-
-struct Request {
-    prompt: String,
-    model: Option<String>,
-    effort: Option<ThinkingEffort>,
-    search: SearchMode,
-    continue_session: bool,
-    why: bool,
-    no_sound: bool,
-}
-
-fn usage_error(program: &str) -> ExitCode {
-    eprintln!("USAGE ERR: {program} <prompt>  (or pipe prompt on stdin)");
-    ExitCode::FAILURE
-}
 
 async fn dispatch() -> Result<ExitCode, String> {
     let mut args = env::args();
@@ -64,21 +50,9 @@ async fn dispatch() -> Result<ExitCode, String> {
                 config::show_config(api::BASE_URL)?;
                 return Ok(ExitCode::SUCCESS);
             }
-            "--config-path" => {
-                cli::no_extra_args(rest, "--config-path")?;
-                println!("{}", config::config_path()?.display());
-                return Ok(ExitCode::SUCCESS);
-            }
-            "--set-model" => {
-                config::set_model(cli::required_value(rest, "--set-model")?)?;
-                return Ok(ExitCode::SUCCESS);
-            }
-            "--set-why-model" => {
-                config::set_why_model(cli::required_value(rest, "--set-why-model")?)?;
-                return Ok(ExitCode::SUCCESS);
-            }
-            "--set-sound" => {
-                config::set_sound(cli::required_value(rest, "--set-sound")?)?;
+            "-u" | "--update" => {
+                cli::no_extra_args(rest, "--update")?;
+                update::run()?;
                 return Ok(ExitCode::SUCCESS);
             }
             _ => {}
@@ -86,40 +60,33 @@ async fn dispatch() -> Result<ExitCode, String> {
     }
 
     let options = Options::parse(&args)?;
+    if options.why && options.continue_session {
+        return Err("-c/--continue cannot be combined with -y/--why".to_string());
+    }
     let prompt = build_prompt(&options)?;
     if prompt.trim().is_empty() {
-        if options.why {
-            eprintln!("USAGE ERR: -y needs a command failure, piped output, a question, or --file");
-            return Ok(ExitCode::FAILURE);
-        }
-        return Ok(usage_error(&program));
+        eprintln!("USAGE: {program} <prompt>  (or pipe prompt on stdin)");
+        return Ok(ExitCode::FAILURE);
     }
 
-    run_request(Request {
-        prompt,
-        model: options.model,
-        effort: options.effort,
-        search: options.search,
-        continue_session: options.continue_session,
-        why: options.why,
-        no_sound: options.no_sound,
-    })
-    .await?;
+    run_request(options, prompt).await?;
     Ok(ExitCode::SUCCESS)
 }
 
 fn build_prompt(options: &Options) -> Result<String, String> {
-    let question = if options.prompt.is_empty() {
-        None
-    } else {
-        Some(options.prompt.join(" "))
-    };
+    let question = (!options.prompt.is_empty()).then(|| options.prompt.join(" "));
     let files = context::load_files(&options.files)?;
 
     if options.why {
         let mut why = context::WhyContext::from_env();
         if !io::stdin().is_terminal() {
             why.output = Some(util::read_stdin()?);
+        }
+        if !why.has_context(&files) {
+            return Err(
+                "--why needs failure context: use huh-why, pipe the failed command's output, or pass --file"
+                    .to_string(),
+            );
         }
         Ok(context::compose_why(&why, question.as_deref(), &files))
     } else {
@@ -132,39 +99,39 @@ fn build_prompt(options: &Options) -> Result<String, String> {
     }
 }
 
-async fn run_request(request: Request) -> Result<(), String> {
+async fn run_request(options: Options, prompt: String) -> Result<(), String> {
     let config = Config::load()?;
     let api_key = config::resolved_api_key(&config)
         .ok_or_else(|| "no API key found; run `huh --login`".to_string())?;
-    let model = request.model.as_deref().unwrap_or_else(|| {
-        if request.why {
-            config.why_model()
-        } else {
-            config.model()
-        }
-    });
-    let sound = sound::should_play(request.no_sound, config.sound_enabled());
+    let model = options.model.as_deref().unwrap_or(config::DEFAULT_MODEL);
 
-    let mut history = if request.continue_session {
+    let mut history = if options.continue_session {
         let mut messages = session::load_session()?;
+        if messages.is_empty() {
+            eprintln!("warning: no previous session found; starting a new conversation");
+        }
         session::trim_history(&mut messages);
         messages
     } else {
         Vec::new()
     };
-    history.push(Message::user(request.prompt));
+    history.push(Message::user(prompt));
 
-    let mode = if request.why {
+    let mode = if options.why {
         api::PromptMode::Why
     } else {
         api::PromptMode::Ask
     };
-    let body = api::build_body(model, &history, request.effort, request.search, mode);
+    let body = api::build_body(model, &history, options.search, mode);
 
     let client = api::client()?;
     let spinner = output::Spinner::start();
+    let started = Instant::now();
     let response = api::post_chat(&client, &api_key, &body).await?;
-    let answer = output::stream_answer(response, spinner, sound).await?;
+    let answer = output::stream_answer(response, spinner, started).await?;
+    if answer.trim().is_empty() {
+        return Err("model returned no answer content".to_string());
+    }
 
     history.push(Message::assistant(answer));
     session::trim_history(&mut history);

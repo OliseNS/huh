@@ -8,7 +8,6 @@ use futures_util::StreamExt;
 
 use crate::api::{StreamUpdate, parse_stream_line};
 use crate::render::{DIM, GREEN, RESET, Renderer, color_allowed};
-use crate::sound;
 
 const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const SPINNER_INTERVAL: Duration = Duration::from_millis(80);
@@ -78,11 +77,11 @@ impl Drop for Spinner {
 pub(crate) async fn stream_answer(
     response: reqwest::Response,
     spinner: Spinner,
-    sound: bool,
+    request_start: Instant,
 ) -> Result<String, String> {
     let stdout = io::stdout();
     let mut out = stdout.lock();
-    let mut state = StreamState::new(sound);
+    let mut state = StreamState::new(Renderer::stdout());
     state.spinner = spinner;
     let mut stream = response.bytes_stream();
     let mut pending: Vec<u8> = Vec::new();
@@ -106,41 +105,28 @@ pub(crate) async fn stream_answer(
         state.handle_line(&String::from_utf8_lossy(&pending), &mut out)?;
     }
 
+    let elapsed = request_start.elapsed();
     state.finish(&mut out)?;
-    state.report_tps();
+    state.report_tps(elapsed);
     Ok(state.answer)
 }
 
 struct StreamState {
     renderer: Renderer,
     spinner: Spinner,
-    generation_start: Option<Instant>,
-    generation_end: Instant,
     fallback_chars: u64,
     usage_tokens: Option<u64>,
     answer: String,
-    sound: bool,
-    started: bool,
-    sound_thread: Option<JoinHandle<()>>,
 }
 
 impl StreamState {
-    fn new(sound: bool) -> Self {
-        Self::with_renderer(Renderer::stdout(), sound)
-    }
-
-    fn with_renderer(renderer: Renderer, sound: bool) -> Self {
+    fn new(renderer: Renderer) -> Self {
         Self {
             renderer,
             spinner: Spinner::inactive(),
-            generation_start: None,
-            generation_end: Instant::now(),
             fallback_chars: 0,
             usage_tokens: None,
             answer: String::new(),
-            sound,
-            started: false,
-            sound_thread: None,
         }
     }
 
@@ -162,19 +148,10 @@ impl StreamState {
 
                 if generated_chars > 0 {
                     self.spinner.stop();
-                    let now = Instant::now();
-                    self.generation_start.get_or_insert(now);
-                    self.generation_end = now;
                     self.fallback_chars += generated_chars as u64;
                 }
 
                 if let Some(text) = content {
-                    if !self.started {
-                        self.started = true;
-                        if self.sound {
-                            self.sound_thread = sound::play();
-                        }
-                    }
                     self.answer.push_str(&text);
                     self.renderer
                         .write(&text, out)
@@ -187,29 +164,13 @@ impl StreamState {
 
     fn finish(&mut self, out: &mut impl Write) -> Result<(), String> {
         self.spinner.stop();
-        let result = self
-            .renderer
+        self.renderer
             .finish(out)
-            .map_err(|error| format!("failed to write output: {error}"));
-        if let Some(handle) = self.sound_thread.take() {
-            let _ = handle.join();
-        }
-        result
+            .map_err(|error| format!("failed to write output: {error}"))
     }
 
-    fn report_tps(&self) {
+    fn report_tps(&self, elapsed: Duration) {
         if !io::stderr().is_terminal() {
-            return;
-        }
-
-        let Some(start) = self.generation_start else {
-            return;
-        };
-        let seconds = self
-            .generation_end
-            .saturating_duration_since(start)
-            .as_secs_f64();
-        if seconds <= 0.0 {
             return;
         }
 
@@ -219,23 +180,31 @@ impl StreamState {
             None => return,
         };
 
-        print_tps(tokens / seconds, estimated);
+        let Some(message) = tps_message(tokens, elapsed, estimated) else {
+            return;
+        };
+
+        let color = color_allowed();
+        if color {
+            eprintln!("{GREEN}{message}{RESET}");
+        } else {
+            eprintln!("{message}");
+        }
     }
 }
 
-fn print_tps(tps: f64, estimated: bool) {
-    let message = if estimated {
+fn tps_message(tokens: f64, elapsed: Duration, estimated: bool) -> Option<String> {
+    let seconds = elapsed.as_secs_f64();
+    if seconds <= 0.0 {
+        return None;
+    }
+
+    let tps = tokens / seconds;
+    Some(if estimated {
         format!("tps: {tps:.1} (estimated)")
     } else {
         format!("tps: {tps:.1}")
-    };
-
-    let color = color_allowed();
-    if color {
-        eprintln!("{GREEN}{message}{RESET}");
-    } else {
-        eprintln!("{message}");
-    }
+    })
 }
 
 #[cfg(test)]
@@ -244,7 +213,7 @@ mod tests {
 
     #[test]
     fn parses_stream_events() {
-        let mut state = StreamState::with_renderer(Renderer::plain(), false);
+        let mut state = StreamState::new(Renderer::plain());
         let mut out = Vec::new();
         state
             .handle_line(
@@ -267,11 +236,24 @@ mod tests {
 
     #[test]
     fn surfaces_stream_errors() {
-        let mut state = StreamState::with_renderer(Renderer::plain(), false);
+        let mut state = StreamState::new(Renderer::plain());
         let mut out = Vec::new();
         let error = state
             .handle_line(r#"data: {"error":{"message":"nope"}}"#, &mut out)
             .unwrap_err();
         assert_eq!(error, "stream error: nope");
+    }
+
+    #[test]
+    fn reports_end_to_end_throughput() {
+        assert_eq!(
+            tps_message(100.0, Duration::from_secs(2), false).as_deref(),
+            Some("tps: 50.0")
+        );
+        assert_eq!(
+            tps_message(100.0, Duration::from_secs(2), true).as_deref(),
+            Some("tps: 50.0 (estimated)")
+        );
+        assert_eq!(tps_message(100.0, Duration::ZERO, false), None);
     }
 }
