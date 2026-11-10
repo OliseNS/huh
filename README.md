@@ -130,6 +130,18 @@ Named files are read and attached to the prompt. Repeat `-f` for multiple files:
 huh -f src/main.rs -f Cargo.toml "review these files"
 ```
 
+Omit the path to pick a file interactively:
+
+```sh
+huh -f
+```
+
+Type to filter, Tab completes, and Enter opens a directory or selects a file. After
+picking, huh asks for your question; press Enter to accept the default, "Explain this
+file." (or "Explain these files."). The same question prompt appears for
+`huh -f <path>` when no question is given. Interactive prompts need a terminal; piped
+invocations must pass a path and the question.
+
 Only files you name explicitly are read. Files are limited to 256 KiB each and 512 KiB
 total. Piped input is read up to 16 MiB and truncated to the last 256 KiB with a marker
 in the prompt, so long logs keep their final errors. Attached file contents are part of
@@ -137,19 +149,19 @@ the saved conversation, so `-c` can refer back to them.
 
 ## Options and commands
 
-| Option / command                   | Description                              |
-| ---------------------------------- | ---------------------------------------- |
-| `-c`, `--continue`                 | Continue the previous conversation       |
-| `-f`, `--file <path>`              | Attach a file to the prompt (repeatable) |
-| `-s`, `--search`                   | Force a web search                       |
-| `-ns`, `--no-search`               | Disable web search for this request      |
-| `-m`, `--model <name>`             | Model for this request                   |
-| `-u`, `--update`                   | Rebuild and reinstall from source        |
-| `--login`                          | Save your OpenRouter API key             |
-| `--logout`                         | Remove the saved API key                 |
-| `--config`                         | Show configuration and defaults          |
-| `-V`, `--version`                  | Show version                             |
-| `-h`, `--help`                     | Show help                                |
+| Option / command                   | Description                                       |
+| ---------------------------------- | ------------------------------------------------- |
+| `-c`, `--continue`                 | Continue the previous conversation                |
+| `-f`, `--file [path]`              | Attach a file; omit path to pick interactively    |
+| `-s`, `--search`                   | Force a web search                                |
+| `-ns`, `--no-search`               | Disable web search for this request               |
+| `-m`, `--model <name>`             | Model for this request                            |
+| `-u`, `--update`                   | Rebuild and reinstall from source                 |
+| `--login`                          | Save your OpenRouter API key                      |
+| `--logout`                         | Remove the saved API key                          |
+| `--config`                         | Show configuration and defaults                   |
+| `-V`, `--version`                  | Show version                                      |
+| `-h`, `--help`                     | Show help                                         |
 
 The default model is `deepseek/deepseek-v4.1-flash-1017:nitro`, chosen for cheap, fast
 answers. Override it for one request with `-m` (for example,

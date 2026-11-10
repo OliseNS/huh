@@ -19,7 +19,7 @@ CONVERSATION:
   -c, --continue                  Continue the previous conversation
 
 ATTACHMENTS:
-  -f, --file <path>               Attach a file to the prompt (repeatable)
+  -f, --file [path]               Attach a file; omit path to pick interactively
 
 WEB SEARCH:
   -s, --search                    Force a web search
@@ -47,12 +47,18 @@ ENVIRONMENT:
     )
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum FileSpec {
+    Path(PathBuf),
+    Pick,
+}
+
 #[derive(Default)]
 pub(crate) struct Options {
     pub(crate) model: Option<String>,
     pub(crate) search: Option<SearchMode>,
     pub(crate) continue_session: bool,
-    pub(crate) files: Vec<PathBuf>,
+    pub(crate) files: Vec<FileSpec>,
     pub(crate) prompt: Vec<String>,
 }
 
@@ -77,18 +83,16 @@ impl Options {
                                 .to_string(),
                         );
                     }
-                    "-f" | "--file" => {
-                        let value = next_value(args, &mut index, arg)?;
-                        if value.is_empty() {
-                            return Err(format!("{arg} value cannot be empty"));
+                    "-f" | "--file" => match args.get(index + 1) {
+                        Some(value) if !value.starts_with('-') => {
+                            if value.is_empty() {
+                                return Err(format!("{arg} value cannot be empty"));
+                            }
+                            options.files.push(FileSpec::Path(PathBuf::from(value)));
+                            index += 1;
                         }
-                        if value.starts_with('-') {
-                            return Err(format!(
-                                "{arg} value cannot start with '-' (use ./ for a file named like that)"
-                            ));
-                        }
-                        options.files.push(PathBuf::from(value));
-                    }
+                        _ => options.files.push(FileSpec::Pick),
+                    },
                     "-s" | "--search" => options.search = Some(SearchMode::On),
                     "-ns" | "--no-search" => options.search = Some(SearchMode::Off),
                     "-c" | "--continue" => options.continue_session = true,
@@ -153,7 +157,10 @@ mod tests {
         assert!(short.continue_session);
         assert_eq!(
             short.files,
-            vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")]
+            vec![
+                FileSpec::Path(PathBuf::from("a.rs")),
+                FileSpec::Path(PathBuf::from("b.rs"))
+            ]
         );
         assert_eq!(short.prompt.join(" "), "hello world");
 
@@ -170,8 +177,24 @@ mod tests {
         assert_eq!(long.model.as_deref(), Some("vendor/model"));
         assert_eq!(long.search, Some(SearchMode::Off));
         assert!(long.continue_session);
-        assert_eq!(long.files, vec![PathBuf::from("a.rs")]);
+        assert_eq!(long.files, vec![FileSpec::Path(PathBuf::from("a.rs"))]);
         assert_eq!(long.prompt.join(" "), "hi");
+    }
+
+    #[test]
+    fn parses_interactive_file_picks() {
+        assert_eq!(parse(&["-f"]).files, vec![FileSpec::Pick]);
+
+        let with_flag = parse(&["-f", "-s", "hello"]);
+        assert_eq!(with_flag.files, vec![FileSpec::Pick]);
+        assert_eq!(with_flag.search, Some(SearchMode::On));
+        assert_eq!(with_flag.prompt.join(" "), "hello");
+
+        let mixed = parse(&["-f", "a.rs", "-f", "-ns", "hello"]);
+        assert_eq!(
+            mixed.files,
+            vec![FileSpec::Path(PathBuf::from("a.rs")), FileSpec::Pick]
+        );
     }
 
     #[test]
@@ -203,10 +226,10 @@ mod tests {
         let unknown = vec!["--nope".to_string()];
         assert!(Options::parse(&unknown).is_err());
 
-        let flag_file: Vec<String> = ["--file", "--search", "hi"]
+        let empty_file: Vec<String> = ["--file", "", "hi"]
             .iter()
             .map(|value| value.to_string())
             .collect();
-        assert!(Options::parse(&flag_file).is_err());
+        assert!(Options::parse(&empty_file).is_err());
     }
 }

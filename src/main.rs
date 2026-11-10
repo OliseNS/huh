@@ -3,6 +3,7 @@ mod cli;
 mod config;
 mod context;
 mod output;
+mod picker;
 mod render;
 mod session;
 mod storage;
@@ -76,11 +77,12 @@ async fn dispatch() -> Result<ExitCode, String> {
 }
 
 fn build_prompt(options: &Options) -> Result<String, String> {
-    let question = (!options.prompt.is_empty()).then(|| options.prompt.join(" "));
-    let files = context::load_files(&options.files)?;
-    let question = match question {
+    let paths = picker::resolve_files(&options.files)?;
+    let files = context::load_files(&paths)?;
+    let question = match (!options.prompt.is_empty()).then(|| options.prompt.join(" ")) {
         Some(question) => Some(question),
         None if !io::stdin().is_terminal() => Some(util::read_prompt_stdin()?),
+        None if !files.is_empty() => Some(picker::ask_question(&paths)?),
         None => None,
     };
     Ok(context::compose_question(question.as_deref(), &files))
