@@ -26,8 +26,8 @@ If a question is ambiguous, state your assumption in one short clause and answer
 Output rules:
 - Print only the answer: no greeting, no restating the question, no closing remarks, no offers of further help.
 - Be accurate, direct, and as concise as completeness allows. A simple question gets one or two sentences. A complex one gets only the structure needed to explain it fully.
-- The output is shown in a terminal that does not render Markdown. Use plain text only: no bold, no headers, no tables, no emojis. Use `-` for lists and indented lines for steps. Keep lines under 80 characters where practical.
-- Put shell commands, code, and file paths on their own indented lines so they are easy to copy. Do not wrap them in triple-backtick fences.
+- Format with GitHub-flavored Markdown: headings, bullet lists, fenced code blocks with a language tag, inline code, and links. Do not use tables or emojis.
+- Put shell commands, code, and file paths in fenced code blocks so they are easy to copy.
 
 Answer quality:
 - For command-line questions, give the command first, then at most a brief note on what the key flags do. Prefer standard, portable tools. If behavior differs between Linux and macOS, show both briefly.
@@ -41,26 +41,32 @@ const HELP: &str = "\
 idk - ask an LLM from your terminal (OpenRouter)
 
 USAGE:
-  idk <prompt>                 Ask a question
+  idk [OPTIONS] <prompt>       Ask a question
   echo <prompt> | idk          Ask a question from stdin
   idk -- <prompt>              Ask a prompt that starts with -
 
+WEB SEARCH:
+  -s, --search                    Ground the answer with web search (adds cost)
+
+OPTIONS:
+  -m, --model <name>              Model for this request
+  -e, --effort <low|medium|high>  Reasoning effort for this request
+  -h, --help                      Show this help
+
 COMMANDS:
-  --login                      Save your OpenRouter API key
-  --logout                     Remove the saved API key
-  --model                      Show the current model
-  --model <name>               Set the model
-  --effort                     Show the current reasoning effort
-  --effort <low|medium|high>   Set reasoning effort
-  --config                     Show the effective configuration
-  --config-path                Print the config file path
-  -h, --help                   Show this help
+  --login                         Save your OpenRouter API key
+  --logout                        Remove the saved API key
+  --set-model <name>              Save the default model
+  --set-effort <low|medium|high>  Save the default reasoning effort
+  --config                        Show the effective configuration
+  --config-path                   Print the config file path
 
 DEFAULT MODEL:
   openai/gpt-oss-20b:nitro
 
 ENVIRONMENT:
   OPENROUTER_API_KEY           Overrides the saved API key
+  NO_COLOR                     Disable colored output
 ";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,8 +153,8 @@ impl Config {
             .unwrap_or(DEFAULT_MODEL)
     }
 
-    fn effort(&self) -> ThinkingEffort {
-        self.effort.unwrap_or_default()
+    fn effort(&self) -> Option<ThinkingEffort> {
+        self.effort
     }
 }
 
@@ -260,6 +266,10 @@ fn single_value<'a>(args: &'a [String], option: &str) -> Result<Option<&'a str>,
     }
 }
 
+fn required_value<'a>(args: &'a [String], option: &str) -> Result<&'a str, String> {
+    single_value(args, option)?.ok_or_else(|| format!("{option} requires a value"))
+}
+
 fn login() -> Result<(), String> {
     let key = read_secret("OpenRouter API key: ")?;
     let key = non_empty(&key).ok_or_else(|| "API key cannot be empty".to_string())?;
@@ -286,32 +296,22 @@ fn logout() -> Result<(), String> {
     Ok(())
 }
 
-fn set_or_show_model(value: Option<&str>) -> Result<(), String> {
+fn set_model(value: &str) -> Result<(), String> {
+    let value = non_empty(value).ok_or_else(|| "model name cannot be empty".to_string())?;
     let mut config = Config::load()?;
-    match value {
-        None => println!("{}", config.model()),
-        Some(value) => {
-            let value = non_empty(value).ok_or_else(|| "model name cannot be empty".to_string())?;
-            config.model = Some(value.to_string());
-            config.save()?;
-            println!("model set to {value}");
-        }
-    }
+    config.model = Some(value.to_string());
+    config.save()?;
+    println!("default model set to {value}");
     Ok(())
 }
 
-fn set_or_show_effort(value: Option<&str>) -> Result<(), String> {
+fn set_effort(value: &str) -> Result<(), String> {
+    let effort = ThinkingEffort::parse(value)
+        .ok_or_else(|| format!("invalid effort: {value} (use low, medium, or high)"))?;
     let mut config = Config::load()?;
-    match value {
-        None => println!("{}", config.effort()),
-        Some(value) => {
-            let effort = ThinkingEffort::parse(value)
-                .ok_or_else(|| format!("invalid effort: {value} (use low, medium, or high)"))?;
-            config.effort = Some(effort);
-            config.save()?;
-            println!("effort set to {effort}");
-        }
-    }
+    config.effort = Some(effort);
+    config.save()?;
+    println!("default effort set to {effort}");
     Ok(())
 }
 
@@ -328,10 +328,73 @@ fn show_config() -> Result<(), String> {
 
     println!("config:   {}", path.display());
     println!("model:    {}", config.model());
-    println!("effort:   {}", config.effort());
+    println!(
+        "effort:   {}",
+        config
+            .effort()
+            .map(|effort| effort.to_string())
+            .unwrap_or_else(|| "model default".to_string())
+    );
     println!("api key:  {api_key}");
     println!("base url: {BASE_URL}");
     Ok(())
+}
+
+#[derive(Default)]
+struct Options {
+    model: Option<String>,
+    effort: Option<ThinkingEffort>,
+    search: bool,
+    prompt: Vec<String>,
+}
+
+impl Options {
+    fn parse(args: &[String]) -> Result<Self, String> {
+        let mut options = Self::default();
+        let mut literal = false;
+        let mut index = 0;
+
+        while index < args.len() {
+            let arg = &args[index];
+            if literal {
+                options.prompt.push(arg.clone());
+            } else {
+                match arg.as_str() {
+                    "--" => literal = true,
+                    "-m" | "--model" => {
+                        let value = args
+                            .get(index + 1)
+                            .ok_or_else(|| format!("{arg} requires a value"))?;
+                        options.model = Some(
+                            non_empty(value)
+                                .ok_or_else(|| format!("{arg} value cannot be empty"))?
+                                .to_string(),
+                        );
+                        index += 1;
+                    }
+                    "-e" | "--effort" => {
+                        let value = args
+                            .get(index + 1)
+                            .ok_or_else(|| format!("{arg} requires a value"))?;
+                        options.effort = Some(ThinkingEffort::parse(value).ok_or_else(|| {
+                            format!("invalid effort: {value} (use low, medium, or high)")
+                        })?);
+                        index += 1;
+                    }
+                    "-s" | "--search" => options.search = true,
+                    option if option.starts_with('-') && option != "-" => {
+                        return Err(format!(
+                            "unknown option: {option}\nRun `idk --help` for usage."
+                        ));
+                    }
+                    _ => options.prompt.push(arg.clone()),
+                }
+            }
+            index += 1;
+        }
+
+        Ok(options)
+    }
 }
 
 async fn dispatch() -> Result<ExitCode, String> {
@@ -339,7 +402,7 @@ async fn dispatch() -> Result<ExitCode, String> {
     let program = args.next().unwrap_or_else(|| "idk".to_string());
     let args: Vec<String> = args.collect();
 
-    let Some((command, rest)) = args.split_first() else {
+    if args.is_empty() {
         if io::stdin().is_terminal() {
             print!("{HELP}");
             return Ok(ExitCode::SUCCESS);
@@ -349,48 +412,70 @@ async fn dispatch() -> Result<ExitCode, String> {
         if prompt.is_empty() {
             return Ok(usage_error(&program));
         }
-        run_prompt(prompt).await?;
+        run_prompt(prompt, None, None, false).await?;
         return Ok(ExitCode::SUCCESS);
+    }
+
+    let Some((command, rest)) = args.split_first() else {
+        unreachable!();
     };
 
     match command.as_str() {
         "-h" | "--help" => {
             no_extra_args(rest, "--help")?;
             print!("{HELP}");
+            return Ok(ExitCode::SUCCESS);
         }
         "--login" => {
             no_extra_args(rest, "--login")?;
             login()?;
+            return Ok(ExitCode::SUCCESS);
         }
         "--logout" => {
             no_extra_args(rest, "--logout")?;
             logout()?;
+            return Ok(ExitCode::SUCCESS);
         }
         "--config" => {
             no_extra_args(rest, "--config")?;
             show_config()?;
+            return Ok(ExitCode::SUCCESS);
         }
         "--config-path" => {
             no_extra_args(rest, "--config-path")?;
             println!("{}", config_path()?.display());
+            return Ok(ExitCode::SUCCESS);
         }
-        "--model" => set_or_show_model(single_value(rest, "--model")?)?,
-        "--effort" => set_or_show_effort(single_value(rest, "--effort")?)?,
-        "--" => {
-            let prompt = rest.join(" ");
-            if prompt.trim().is_empty() {
-                return Ok(usage_error(&program));
-            }
-            run_prompt(prompt).await?;
+        "--set-model" => {
+            set_model(required_value(rest, "--set-model")?)?;
+            return Ok(ExitCode::SUCCESS);
         }
-        option if option.starts_with('-') => {
-            return Err(format!(
-                "unknown option: {option}\nRun `idk --help` for usage."
-            ));
+        "--set-effort" => {
+            set_effort(required_value(rest, "--set-effort")?)?;
+            return Ok(ExitCode::SUCCESS);
         }
-        _ => run_prompt(args.join(" ")).await?,
+        _ => {}
     }
 
+    let options = Options::parse(&args)?;
+    let prompt = if options.prompt.is_empty() {
+        if io::stdin().is_terminal() {
+            return Ok(usage_error(&program));
+        }
+        let prompt = read_stdin_prompt()?;
+        if prompt.is_empty() {
+            return Ok(usage_error(&program));
+        }
+        prompt
+    } else {
+        let prompt = options.prompt.join(" ");
+        if prompt.trim().is_empty() {
+            return Ok(usage_error(&program));
+        }
+        prompt
+    };
+
+    run_prompt(prompt, options.model, options.effort, options.search).await?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -508,7 +593,7 @@ fn print_tps(tps: f64, estimated: bool) {
         format!("tps: {tps:.1}")
     };
 
-    let color = io::stderr().is_terminal() && color_allowed();
+    let color = color_allowed();
     if color {
         eprintln!("{GREEN}{message}{RESET}");
     } else {
@@ -516,35 +601,125 @@ fn print_tps(tps: f64, estimated: bool) {
     }
 }
 
-async fn run_prompt(prompt: String) -> Result<(), String> {
+const MAX_ATTEMPTS: usize = 4;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const READ_TIMEOUT: Duration = Duration::from_secs(120);
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
+
+fn truncate(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    let mut truncated: String = text.chars().take(limit).collect();
+    truncated.push('…');
+    truncated
+}
+
+async fn post_chat(
+    client: &reqwest::Client,
+    api_key: &str,
+    body: &serde_json::Value,
+) -> Result<reqwest::Response, String> {
+    let mut delay = Duration::from_millis(500);
+    let mut last_error = String::new();
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        let request = client
+            .post(format!("{BASE_URL}/chat/completions"))
+            .bearer_auth(api_key)
+            .json(body)
+            .send();
+
+        match tokio::time::timeout(RESPONSE_TIMEOUT, request).await {
+            Ok(Ok(response)) => {
+                let status = response.status();
+                if status.is_success() {
+                    return Ok(response);
+                }
+
+                let retry_after = response
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.trim().parse::<u64>().ok());
+                let text = response.text().await.unwrap_or_default();
+                last_error = format!("HTTP {status}: {}", truncate(text.trim(), 500));
+
+                let retryable =
+                    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
+                if !retryable || attempt == MAX_ATTEMPTS {
+                    return Err(last_error);
+                }
+                if let Some(seconds) = retry_after {
+                    delay = Duration::from_secs(seconds.min(30));
+                }
+            }
+            Ok(Err(error)) => {
+                last_error = format!("request failed: {error}");
+                if attempt == MAX_ATTEMPTS {
+                    return Err(last_error);
+                }
+            }
+            Err(_) => {
+                last_error = format!("request timed out after {}s", RESPONSE_TIMEOUT.as_secs());
+                if attempt == MAX_ATTEMPTS {
+                    return Err(last_error);
+                }
+            }
+        }
+
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(Duration::from_secs(8));
+    }
+
+    Err(last_error)
+}
+
+fn build_body(
+    model: &str,
+    prompt: &str,
+    effort: Option<ThinkingEffort>,
+    search: bool,
+) -> serde_json::Value {
+    let mut body = json!({
+        "model": model,
+        "stream": true,
+        "messages": [
+            { "role": "system", "content": SYSTEM_PROMPT },
+            { "role": "user", "content": prompt },
+        ],
+        "stream_options": { "include_usage": true },
+    });
+    if let Some(effort) = effort {
+        body["reasoning"] = json!({ "effort": effort.as_str() });
+    }
+    if search && !model.ends_with(":online") {
+        body["plugins"] = json!([{ "id": "web" }]);
+    }
+    body
+}
+
+async fn run_prompt(
+    prompt: String,
+    model_override: Option<String>,
+    effort_override: Option<ThinkingEffort>,
+    search: bool,
+) -> Result<(), String> {
     let config = Config::load()?;
     let api_key = resolved_api_key(&config)
         .ok_or_else(|| "no API key found; run `idk --login`".to_string())?;
+    let model = model_override.as_deref().unwrap_or(config.model());
+    let effort = effort_override.or(config.effort());
+    let body = build_body(model, &prompt, effort, search);
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(READ_TIMEOUT)
+        .build()
+        .map_err(|error| format!("failed to create HTTP client: {error}"))?;
 
     let spinner = Spinner::start();
-    let response = reqwest::Client::new()
-        .post(format!("{BASE_URL}/chat/completions"))
-        .bearer_auth(api_key)
-        .json(&json!({
-            "model": config.model(),
-            "stream": true,
-            "messages": [
-                { "role": "system", "content": SYSTEM_PROMPT },
-                { "role": "user", "content": prompt },
-            ],
-            "reasoning": { "effort": config.effort().as_str() },
-            "stream_options": { "include_usage": true },
-        }))
-        .send()
-        .await
-        .map_err(|error| format!("request failed: {error}"))?;
-
-    let status = response.status();
-    if !status.is_success() {
-        drop(spinner);
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("HTTP {status}: {body}"));
-    }
+    let response = post_chat(&client, &api_key, &body).await?;
 
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -578,7 +753,7 @@ struct StreamState {
     spinner: Spinner,
     generation_start: Option<Instant>,
     generation_end: Instant,
-    fallback_tokens: u64,
+    fallback_chars: u64,
     usage_tokens: Option<u64>,
 }
 
@@ -593,7 +768,7 @@ impl StreamState {
             spinner: Spinner::inactive(),
             generation_start: None,
             generation_end: Instant::now(),
-            fallback_tokens: 0,
+            fallback_chars: 0,
             usage_tokens: None,
         }
     }
@@ -636,12 +811,15 @@ impl StreamState {
             .as_deref()
             .filter(|text| !text.is_empty());
 
-        if content.is_some() || reasoning.is_some() {
+        let generated_chars = content.map_or(0, |text| text.chars().count())
+            + reasoning.map_or(0, |text| text.chars().count());
+
+        if generated_chars > 0 {
             self.spinner.stop();
             let now = Instant::now();
             self.generation_start.get_or_insert(now);
             self.generation_end = now;
-            self.fallback_tokens += 1;
+            self.fallback_chars += generated_chars as u64;
         }
 
         if let Some(text) = content {
@@ -660,6 +838,10 @@ impl StreamState {
     }
 
     fn report_tps(&self) {
+        if !io::stderr().is_terminal() {
+            return;
+        }
+
         let Some(start) = self.generation_start else {
             return;
         };
@@ -667,14 +849,17 @@ impl StreamState {
             .generation_end
             .saturating_duration_since(start)
             .as_secs_f64();
-        let tokens = self
-            .usage_tokens
-            .or((self.fallback_tokens > 0).then_some(self.fallback_tokens));
-        if let Some(tokens) = tokens
-            && seconds > 0.0
-        {
-            print_tps(tokens as f64 / seconds, self.usage_tokens.is_none());
+        if seconds <= 0.0 {
+            return;
         }
+
+        let (tokens, estimated) = match self.usage_tokens {
+            Some(tokens) => (tokens as f64, false),
+            None if self.fallback_chars > 0 => ((self.fallback_chars as f64 / 4.0).ceil(), true),
+            None => return,
+        };
+
+        print_tps(tokens / seconds, estimated);
     }
 }
 
@@ -702,8 +887,62 @@ mod tests {
     fn config_falls_back_to_defaults() {
         let config = Config::default();
         assert_eq!(config.model(), DEFAULT_MODEL);
-        assert_eq!(config.effort(), ThinkingEffort::Low);
+        assert_eq!(config.effort(), None);
         assert_eq!(config.api_key(), None);
+    }
+
+    #[test]
+    fn parses_per_call_options() {
+        let args: Vec<String> = ["-m", "vendor/model", "-e", "HIGH", "-s", "hello", "world"]
+            .iter()
+            .map(|value| value.to_string())
+            .collect();
+        let options = Options::parse(&args).unwrap();
+        assert_eq!(options.model.as_deref(), Some("vendor/model"));
+        assert_eq!(options.effort, Some(ThinkingEffort::High));
+        assert!(options.search);
+        assert_eq!(options.prompt.join(" "), "hello world");
+    }
+
+    #[test]
+    fn search_flag_is_off_by_default() {
+        let args = vec!["hello".to_string()];
+        assert!(!Options::parse(&args).unwrap().search);
+    }
+
+    #[test]
+    fn body_adds_web_plugin_only_when_searching() {
+        let plain = build_body("vendor/model", "hi", None, false);
+        assert!(plain.get("plugins").is_none());
+
+        let searching = build_body("vendor/model", "hi", None, true);
+        assert_eq!(searching["plugins"], json!([{ "id": "web" }]));
+
+        let online = build_body("vendor/model:online", "hi", None, true);
+        assert!(online.get("plugins").is_none());
+    }
+
+    #[test]
+    fn double_dash_treats_the_rest_as_prompt() {
+        let args: Vec<String> = ["--", "-m", "not-a-flag"]
+            .iter()
+            .map(|value| value.to_string())
+            .collect();
+        let options = Options::parse(&args).unwrap();
+        assert_eq!(options.model, None);
+        assert_eq!(options.prompt.join(" "), "-m not-a-flag");
+    }
+
+    #[test]
+    fn rejects_unknown_options() {
+        let args = vec!["--nope".to_string()];
+        assert!(Options::parse(&args).is_err());
+    }
+
+    #[test]
+    fn truncates_long_text() {
+        assert_eq!(truncate("short", 10), "short");
+        assert_eq!(truncate("abcdefghij", 5), "abcde…");
     }
 
     #[test]

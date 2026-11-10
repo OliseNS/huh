@@ -7,7 +7,7 @@ Answers stream as they arrive. When stdout is a terminal, Markdown is rendered w
 styled headings, lists, code blocks, links, and inline code; piped output stays raw
 Markdown. Set `NO_COLOR=1` to disable colors. While waiting for the first token, a
 spinner is shown on stderr when it is a terminal, and token throughput is reported
-there once the answer completes.
+there too when stderr is a terminal.
 
 ## Requirements
 
@@ -58,23 +58,38 @@ with private permissions.
 idk "why is the sky blue?"
 echo "explain closures in Rust" | idk
 idk -- "what does -v mean?"
+idk --search "what happened in the news today?"
+```
+
+`--search` (or `-s`) grounds the answer with [OpenRouter's web search
+plugin](https://openrouter.ai/docs/features/web-search), which adds a per-request
+search fee on top of model usage. Results are cited as Markdown links.
+
+Per-request flags override the saved configuration:
+
+```sh
+idk -m openai/gpt-5-mini "summarize this diff"
+idk -e low "what is a monad?"
 ```
 
 ### Commands
 
-| Command                      | Description                              |
-| ---------------------------- | ---------------------------------------- |
+| Command                         | Description                              |
+| ------------------------------- | ---------------------------------------- |
+| `-s`, `--search`             | Ground the answer with web search        |
 | `--login`                    | Save your OpenRouter API key             |
-| `--logout`                   | Remove the saved API key                 |
-| `--model`                    | Show the current model                   |
-| `--model <name>`             | Set the model                            |
-| `--effort`                   | Show the current reasoning effort        |
-| `--effort <low\|medium\|high>` | Set reasoning effort                   |
-| `--config`                   | Show the effective configuration         |
-| `--config-path`              | Print the config file path               |
-| `-h`, `--help`               | Show help                                |
+| `--logout`                      | Remove the saved API key                 |
+| `--set-model <name>`            | Save the default model                   |
+| `--set-effort <low\|medium\|high>` | Save the default reasoning effort     |
+| `--config`                      | Show the effective configuration         |
+| `--config-path`                 | Print the config file path               |
+| `-h`, `--help`                  | Show help                                |
 
-The default model is `openai/gpt-oss-20b:nitro`.
+The default model is `openai/gpt-oss-20b:nitro`. Reasoning effort is sent only when
+configured with `--set-effort` or `-e`; otherwise the model's default is used.
+
+Requests use a 10s connect timeout and a 120s read timeout. Transient failures
+(429 and 5xx responses) are retried up to four times with exponential backoff.
 
 ## Development
 
