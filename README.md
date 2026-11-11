@@ -158,8 +158,10 @@ The session lives at `${XDG_STATE_HOME:-$HOME/.local/state}/huh/session.json`. H
 The default model is `openai/gpt-oss-120b:nitro`. Use `-m` to pick a different model for one request:
 
 ```sh
-huh -m openai/gpt-5-mini review this architecture and list the risks
+huh -f src/main.rs -m openai/gpt-5-mini review this file and list the risks
 ```
+
+`huh` only sees your question and the files you attach with `-f`. It cannot browse your repository or run commands.
 
 ## Update
 
