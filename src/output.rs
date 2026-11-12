@@ -92,6 +92,16 @@ pub(crate) fn stream_answer(
     )
 }
 
+pub(crate) fn print_answer(answer: &str) -> Result<(), String> {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let mut renderer = Renderer::stdout();
+    renderer
+        .write(answer, &mut out)
+        .and_then(|()| renderer.finish(&mut out))
+        .map_err(|error| format!("failed to write output: {error}"))
+}
+
 fn stream_response(
     response: ChatResponse,
     spinner: Spinner,

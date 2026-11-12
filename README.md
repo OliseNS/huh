@@ -153,6 +153,16 @@ huh -c now show a small example
 
 The session lives at `${XDG_STATE_HOME:-$HOME/.local/state}/huh/session.json`. History keeps up to 10 question-and-answer pairs (20 messages) and about 80,000 characters. The first pair is kept as the starting context; the oldest middle pairs are dropped first. If the first and latest pairs still do not fit, the first pair is dropped too, and the latest pair is always kept.
 
+## Show the last answer
+
+If a long answer has scrolled out of view, print it again without asking the model:
+
+```sh
+huh -l
+```
+
+The answer is re-rendered from your saved conversation, so it adapts to the current window width and color settings. It works offline and does not need an API key. Only completed answers are saved; if there is no previous answer, `huh -l` exits with an error.
+
 ## Choose a model
 
 The default model is `openai/gpt-oss-120b:nitro`. Use `-m` to pick a different model for one request:
@@ -182,6 +192,7 @@ If you installed from source, `huh -u` rebuilds and reinstalls the running binar
 | `-s`, `--search` | Force a web search |
 | `-ns`, `--no-search` | Disable web search for this request |
 | `-m`, `--model <name>` | Use a different model for this request |
+| `-l`, `--last` | Show the last answer again |
 | `-u`, `--update` | Rebuild and install from source |
 | `--login` | Save your OpenRouter API key |
 | `--logout` | Remove the saved API key |

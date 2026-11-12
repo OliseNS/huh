@@ -61,6 +61,11 @@ fn dispatch() -> Result<ExitCode, String> {
                 update::run()?;
                 return Ok(ExitCode::SUCCESS);
             }
+            "-l" | "--last" => {
+                cli::no_extra_args(rest, "--last")?;
+                show_last_answer()?;
+                return Ok(ExitCode::SUCCESS);
+            }
             _ => {}
         }
     }
@@ -74,6 +79,13 @@ fn dispatch() -> Result<ExitCode, String> {
 
     run_request(options, prompt)?;
     Ok(ExitCode::SUCCESS)
+}
+
+fn show_last_answer() -> Result<(), String> {
+    let messages = session::load_session()?;
+    let answer = session::last_answer(&messages)
+        .ok_or_else(|| "no previous answer found; ask a question first".to_string())?;
+    output::print_answer(answer)
 }
 
 fn build_prompt(options: &Options) -> Result<String, String> {

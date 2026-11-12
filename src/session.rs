@@ -65,6 +65,14 @@ fn valid_history(messages: &[Message]) -> bool {
             .all(|pair| pair[0].role == "user" && pair[1].role == "assistant")
 }
 
+pub(crate) fn last_answer(messages: &[Message]) -> Option<&str> {
+    messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "assistant")
+        .map(|message| message.content.as_str())
+}
+
 pub(crate) fn load_session() -> Result<Vec<Message>, String> {
     let path = state_path()?;
     let Some(messages) = load_or_backup::<Vec<Message>>(&path, "session")? else {
@@ -104,6 +112,19 @@ mod tests {
                 ]
             })
             .collect()
+    }
+
+    #[test]
+    fn finds_the_latest_answer() {
+        let messages = vec![
+            Message::user("q1"),
+            Message::assistant("a1"),
+            Message::user("q2"),
+            Message::assistant("a2"),
+        ];
+        assert_eq!(last_answer(&messages), Some("a2"));
+        assert_eq!(last_answer(&[]), None);
+        assert_eq!(last_answer(&[Message::user("q")]), None);
     }
 
     #[test]
