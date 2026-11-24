@@ -30,7 +30,7 @@ curl -LsSf https://olisemeka.dev/huh/install.sh | sh
 
 The installer downloads the right build for your computer, checks its SHA-256 checksum, and installs `huh` to `~/.local/bin/huh`. It supports Linux (x86_64, aarch64, armv7, and i686) and macOS (Intel and Apple silicon). Under Git Bash, MSYS2, or Cygwin it hands off to the PowerShell installer.
 
-Set `HUH_INSTALL_DIR` to install somewhere else, or `HUH_VERSION=v0.1.0` to pin a release.
+Set `HUH_INSTALL_DIR` to install somewhere else, or `HUH_VERSION=v0.2.0` to pin a release.
 
 ![Installing huh with the curl installer](assets/huh-install.png)
 
@@ -226,3 +226,7 @@ rm -r "${XDG_STATE_HOME:-$HOME/.local/state}/huh"
 - Source: [github.com/OliseNS/huh](https://github.com/OliseNS/huh)
 - Installer: [olisemeka.dev/huh/install.sh](https://olisemeka.dev/huh/install.sh)
 - OpenRouter: [openrouter.ai](https://openrouter.ai)
+
+## License
+
+MIT. See [LICENSE](LICENSE).
